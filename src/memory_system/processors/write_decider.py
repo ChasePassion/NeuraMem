@@ -16,10 +16,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MemoryRecord:
-    """A single episodic memory record to be written."""
-    who: str
+    """A single episodic memory record to be written.
+    
+    In v2 schema, all information is stored in the text field.
+    The text field should include: time, where (if applicable), who, thing, reason.
+    """
     text: str
-    metadata: Dict[str, Any]
 
 
 @dataclass
@@ -86,22 +88,18 @@ class EpisodicWriteDecider:
         write_episodic = response.get("write_episodic", False)
         raw_records = response.get("records", [])
         
-        # Convert raw records to MemoryRecord objects
+        # Convert raw records to MemoryRecord objects (v2 schema: text only)
         records = []
         for raw in raw_records:
             if isinstance(raw, dict):
-                record = MemoryRecord(
-                    who=raw.get("who", "user"),
-                    text=raw.get("text", ""),
-                    metadata=raw.get("metadata", {})
-                )
-                # Ensure metadata has required fields
-                if "who" not in record.metadata:
-                    record.metadata["who"] = record.who
-                if "context" not in record.metadata:
-                    record.metadata["context"] = ""
-                if "thing" not in record.metadata:
-                    record.metadata["thing"] = ""
+                # In v2 schema, all information is in the text field
+                text = raw.get("text", "")
+                if text:
+                    record = MemoryRecord(text=text)
+                    records.append(record)
+            elif isinstance(raw, str) and raw:
+                # Support simple string records
+                record = MemoryRecord(text=raw)
                 records.append(record)
         
         logger.info(

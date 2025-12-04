@@ -44,14 +44,16 @@ def dynamic_field_value_strategy():
     )
 
 
-class TestDynamicFieldStorageConsistency:
-    """Property tests for dynamic field storage in Milvus.
+class TestCoreFieldStorageConsistency:
+    """Property tests for core field storage in Milvus.
     
-    **Feature: ai-memory-system, Property 1: Dynamic Field Storage Consistency**
+    **Feature: ai-memory-system, Property 1: Core Field Storage Consistency**
     **Validates: Requirements 1.4**
     
-    For any additional metadata field not in the schema, when stored in a 
-    memory record, the field SHALL be retrievable with the same value.
+    For any memory record with core fields, when stored, the fields 
+    SHALL be retrievable with the same values.
+    
+    (v2 schema: simplified, no metadata field)
     """
 
     @settings(
@@ -66,36 +68,27 @@ class TestDynamicFieldStorageConsistency:
         field_name=valid_field_name_strategy(),
         field_value=dynamic_field_value_strategy()
     )
-    def test_dynamic_field_round_trip(self, milvus_store, field_name, field_value):
+    def test_core_field_round_trip(self, milvus_store, field_name, field_value):
         """
-        **Feature: ai-memory-system, Property 1: Dynamic Field Storage Consistency**
+        **Feature: ai-memory-system, Property 1: Core Field Storage Consistency**
         **Validates: Requirements 1.4**
         
-        For any additional metadata field not in the schema, when stored in a 
-        memory record, the field SHALL be retrievable with the same value.
+        For any memory record with core fields, when stored, the fields 
+        SHALL be retrievable with the same values.
         """
         # Skip if field_name is empty after filtering
         assume(len(field_name) > 0)
         
-        # Create a memory record with a dynamic field in metadata
+        # Create a memory record with core fields (v2 schema)
         test_user_id = f"test_user_{field_name[:10]}"
+        test_text = f"Test memory for storage test with {field_name}"
         memory_record = {
             "user_id": test_user_id,
             "memory_type": "episodic",
             "ts": 1700000000,
             "chat_id": "test_chat_001",
-            "who": "user",
-            "text": "Test memory for dynamic field storage",
+            "text": test_text,
             "vector": [0.1] * 2560,  # Required vector field
-            "hit_count": 0,
-            "metadata": {
-                "context": "test context",
-                "thing": "test thing",
-                "time": "2024-01-01T00:00:00Z",
-                "chatid": "test_chat_001",
-                "who": "user",
-                field_name: field_value  # Dynamic field
-            }
         }
         
         # Insert the record
@@ -111,7 +104,7 @@ class TestDynamicFieldStorageConsistency:
             for _ in range(5):
                 results = milvus_store.query(
                     filter_expr=f"id == {ids[0]}",
-                    output_fields=["metadata"]
+                    output_fields=["*"]
                 )
                 if len(results) > 0:
                     break
@@ -119,21 +112,19 @@ class TestDynamicFieldStorageConsistency:
             
             assert len(results) == 1, "Should retrieve exactly one record"
             
-            retrieved_metadata = results[0]["metadata"]
+            record = results[0]
             
-            # Verify the dynamic field is present and has the same value
-            assert field_name in retrieved_metadata, \
-                f"Dynamic field '{field_name}' should be present in retrieved metadata"
-            
-            retrieved_value = retrieved_metadata[field_name]
-            
-            # Handle float comparison with tolerance
-            if isinstance(field_value, float):
-                assert abs(retrieved_value - field_value) < 1e-6, \
-                    f"Dynamic field value mismatch: expected {field_value}, got {retrieved_value}"
-            else:
-                assert retrieved_value == field_value, \
-                    f"Dynamic field value mismatch: expected {field_value}, got {retrieved_value}"
+            # Verify core fields are present and have correct values
+            assert record["user_id"] == test_user_id, \
+                f"user_id mismatch: expected {test_user_id}, got {record['user_id']}"
+            assert record["memory_type"] == "episodic", \
+                f"memory_type mismatch: expected 'episodic', got {record['memory_type']}"
+            assert record["ts"] == 1700000000, \
+                f"ts mismatch: expected 1700000000, got {record['ts']}"
+            assert record["chat_id"] == "test_chat_001", \
+                f"chat_id mismatch: expected 'test_chat_001', got {record['chat_id']}"
+            assert record["text"] == test_text, \
+                f"text mismatch: expected {test_text}, got {record['text']}"
                     
         finally:
             # Cleanup: delete the test record

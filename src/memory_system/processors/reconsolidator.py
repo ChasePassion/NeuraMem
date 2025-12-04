@@ -80,34 +80,22 @@ class EpisodicReconsolidator:
     ) -> Dict[str, Any]:
         """Create a default update if LLM fails.
         
+        In v2 schema, all information is stored in the text field.
+        
         Args:
             old_memory: Original memory record
             current_context: Current context text
             
         Returns:
-            Default updated record
+            Default updated record (v2 schema)
         """
-        metadata = old_memory.get("metadata", {})
-        existing_updates = metadata.get("updates", [])
-        
-        # Create new update entry
-        new_update = {
-            "time": datetime.now(timezone.utc).isoformat(),
-            "desc": f"Updated with new context: {current_context[:100]}..."
-        }
+        old_text = old_memory.get("text", "")
+        # Append new context to existing text
+        updated_text = f"{old_text} [更新: {current_context[:100]}]"
         
         return {
             "chat_id": old_memory.get("chat_id", ""),
-            "who": old_memory.get("who", "user"),
-            "text": old_memory.get("text", ""),
-            "metadata": {
-                "context": metadata.get("context", ""),
-                "thing": metadata.get("thing", ""),
-                "time": metadata.get("time", ""),
-                "chatid": metadata.get("chatid", ""),
-                "who": metadata.get("who", "user"),
-                "updates": existing_updates + [new_update]
-            }
+            "text": updated_text,
         }
     
     def _apply_reconsolidation(
@@ -118,73 +106,29 @@ class EpisodicReconsolidator:
     ) -> Dict[str, Any]:
         """Apply reconsolidation updates while preserving immutable fields.
         
+        In v2 schema, all information is stored in the text field.
+        
         Args:
             old_memory: Original memory record
             response: LLM response with updates
             current_context: Current context for update tracking
             
         Returns:
-            Updated memory record
+            Updated memory record (v2 schema)
         """
         # Start with a copy of original
         result = old_memory.copy()
         
         # Preserve immutable top-level fields
         # (id, user_id, ts, memory_type are handled upstream)
+        result["chat_id"] = old_memory.get("chat_id", "")
         
-        # Update text if provided
+        # Update text if provided (v2 schema: all info in text)
         if "text" in response and response["text"]:
             result["text"] = response["text"]
-        
-        # Handle metadata updates
-        old_metadata = old_memory.get("metadata", {})
-        response_metadata = response.get("metadata", {})
-        
-        if "metadata" not in result:
-            result["metadata"] = {}
-        
-        # Update mutable metadata fields
-        if "context" in response_metadata and response_metadata["context"]:
-            result["metadata"]["context"] = response_metadata["context"]
-        if "thing" in response_metadata and response_metadata["thing"]:
-            result["metadata"]["thing"] = response_metadata["thing"]
-        
-        # Preserve immutable metadata fields (Requirements 4.2)
-        result["metadata"]["time"] = old_metadata.get("time", "")
-        result["metadata"]["chatid"] = old_metadata.get("chatid", "")
-        result["metadata"]["who"] = old_metadata.get("who", "user")
-        
-        # Preserve chat_id and who at top level
-        result["chat_id"] = old_memory.get("chat_id", "")
-        result["who"] = old_memory.get("who", "user")
-        
-        # Handle updates array (Requirements 4.4)
-        existing_updates = old_metadata.get("updates", [])
-        response_updates = response_metadata.get("updates", [])
-        
-        # Ensure updates array grows
-        if response_updates:
-            # Use response updates if they include existing ones
-            if len(response_updates) > len(existing_updates):
-                result["metadata"]["updates"] = response_updates
-            else:
-                # Append new updates from response
-                new_updates = [u for u in response_updates if u not in existing_updates]
-                result["metadata"]["updates"] = existing_updates + new_updates
         else:
-            # No updates in response, add a default one
-            new_update = {
-                "time": datetime.now(timezone.utc).isoformat(),
-                "desc": f"Reconsolidated with context: {current_context[:50]}..."
-            }
-            result["metadata"]["updates"] = existing_updates + [new_update]
-        
-        # Ensure updates array has at least one more entry than before
-        if len(result["metadata"]["updates"]) <= len(existing_updates):
-            new_update = {
-                "time": datetime.now(timezone.utc).isoformat(),
-                "desc": f"Reconsolidated with context: {current_context[:50]}..."
-            }
-            result["metadata"]["updates"].append(new_update)
+            # Append context to existing text as fallback
+            old_text = old_memory.get("text", "")
+            result["text"] = f"{old_text} [更新: {current_context[:50]}...]"
         
         return result

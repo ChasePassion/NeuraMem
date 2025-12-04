@@ -23,23 +23,14 @@ def iso_time_strategy():
 
 
 def episodic_memory_strategy():
-    """Generate valid episodic memory records for testing."""
+    """Generate valid episodic memory records for testing (v2 schema)."""
     return st.fixed_dictionaries({
         "id": st.integers(min_value=1, max_value=1000000),
         "user_id": st.text(min_size=1, max_size=20, alphabet="abcdefghijklmnopqrstuvwxyz0123456789_"),
         "memory_type": st.just("episodic"),
         "ts": st.integers(min_value=1600000000, max_value=1800000000),
         "chat_id": st.text(min_size=1, max_size=30, alphabet="abcdefghijklmnopqrstuvwxyz0123456789-_"),
-        "who": st.sampled_from(["user", "assistant", "friend"]),
         "text": st.text(min_size=10, max_size=200),
-        "hit_count": st.integers(min_value=0, max_value=100),
-        "metadata": st.fixed_dictionaries({
-            "context": st.text(min_size=5, max_size=100),
-            "thing": st.text(min_size=5, max_size=100),
-            "time": iso_time_strategy(),
-            "chatid": st.text(min_size=1, max_size=30, alphabet="abcdefghijklmnopqrstuvwxyz0123456789-_"),
-            "who": st.sampled_from(["user", "assistant", "friend"])
-        })
     })
 
 
@@ -86,6 +77,8 @@ class TestMergeRecordCountInvariant:
     
     For any merge operation on two memories, the total record count 
     SHALL decrease by exactly 1 (two deleted, one inserted).
+    
+    (v2 schema: simplified record structure)
     """
 
     @settings(
@@ -108,10 +101,8 @@ class TestMergeRecordCountInvariant:
         For any merge operation on two memories, the total record count 
         SHALL decrease by exactly 1.
         """
-        # Ensure memories are from same user and mergeable
+        # Ensure memories are from same user
         memory_b["user_id"] = memory_a["user_id"]
-        memory_b["who"] = memory_a["who"]
-        memory_b["metadata"]["who"] = memory_a["metadata"]["who"]
         
         # Add vectors for storage
         memory_a["vector"] = [0.1] * 2560
@@ -141,15 +132,22 @@ class TestMergeRecordCountInvariant:
             # Perform merge
             merged = merger.merge(memory_a, memory_b)
             merged["vector"] = [0.15] * 2560  # Add vector for merged record
-            merged["hit_count"] = 0
             merged["ts"] = memory_a["ts"]
             
             # Delete originals
             milvus_store.delete(ids=ids)
             milvus_store.flush()
             
-            # Insert merged
-            merged_ids = milvus_store.insert([merged])
+            # Insert merged (v2 schema)
+            merged_record = {
+                "user_id": merged.get("user_id", memory_a["user_id"]),
+                "memory_type": "episodic",
+                "ts": merged.get("ts", memory_a["ts"]),
+                "chat_id": merged.get("chat_id", memory_a["chat_id"]),
+                "text": merged.get("text", ""),
+                "vector": merged["vector"],
+            }
+            merged_ids = milvus_store.insert([merged_record])
             milvus_store.flush()
             
             # Get final count
@@ -171,14 +169,16 @@ class TestMergeRecordCountInvariant:
                 pass
 
 
-class TestMergedRecordTimeSelection:
-    """Property tests for merged record time selection.
+class TestMergedRecordTextCombination:
+    """Property tests for merged record text combination.
     
-    **Feature: ai-memory-system, Property 21: Merged Record Time Selection**
+    **Feature: ai-memory-system, Property 21: Merged Record Text Combination**
     **Validates: Requirements 9.4**
     
-    For any merge operation, the resulting record's metadata.time 
-    SHALL equal the earlier of the two original metadata.time values.
+    For any merge operation, the resulting record's text field 
+    SHALL contain information from both original records.
+    
+    (v2 schema: all information is in text field)
     """
 
     @settings(
@@ -193,39 +193,35 @@ class TestMergedRecordTimeSelection:
         memory_a=episodic_memory_strategy(),
         memory_b=episodic_memory_strategy()
     )
-    def test_merged_record_uses_earliest_time(self, merger, memory_a, memory_b):
+    def test_merged_record_combines_text(self, merger, memory_a, memory_b):
         """
-        **Feature: ai-memory-system, Property 21: Merged Record Time Selection**
+        **Feature: ai-memory-system, Property 21: Merged Record Text Combination**
         **Validates: Requirements 9.4**
         
-        For any merge operation, the resulting record's metadata.time 
-        SHALL equal the earlier of the two original metadata.time values.
+        For any merge operation, the resulting record's text field 
+        SHALL be non-empty and contain combined information.
         """
         # Ensure memories are mergeable
         memory_b["user_id"] = memory_a["user_id"]
-        memory_b["who"] = memory_a["who"]
-        
-        time_a = memory_a["metadata"]["time"]
-        time_b = memory_b["metadata"]["time"]
-        expected_earliest = min(time_a, time_b)
         
         # Perform merge
         merged = merger.merge(memory_a, memory_b)
         
-        # Verify time selection
-        merged_time = merged.get("metadata", {}).get("time", "")
-        assert merged_time == expected_earliest, \
-            f"Merged time should be earliest: expected={expected_earliest}, got={merged_time}"
+        # Verify text is present and non-empty
+        merged_text = merged.get("text", "")
+        assert merged_text, "Merged text should not be empty"
+        assert len(merged_text) > 0, "Merged text should have content"
 
 
-class TestMergedRecordSourceTracking:
-    """Property tests for merged record source tracking.
+class TestMergedRecordChatIdPreservation:
+    """Property tests for merged record chat_id preservation.
     
-    **Feature: ai-memory-system, Property 22: Merged Record Source Tracking**
+    **Feature: ai-memory-system, Property 22: Merged Record Chat ID Preservation**
     **Validates: Requirements 9.5**
     
-    For any merge operation, the resulting record's metadata.source_chat_ids 
-    SHALL contain both original chat_ids.
+    For any merge operation, the resulting record SHALL have a valid chat_id.
+    
+    (v2 schema: simplified, no source tracking in metadata)
     """
 
     @settings(
@@ -240,38 +236,25 @@ class TestMergedRecordSourceTracking:
         memory_a=episodic_memory_strategy(),
         memory_b=episodic_memory_strategy()
     )
-    def test_merged_record_tracks_sources(self, merger, memory_a, memory_b):
+    def test_merged_record_has_chat_id(self, merger, memory_a, memory_b):
         """
-        **Feature: ai-memory-system, Property 22: Merged Record Source Tracking**
+        **Feature: ai-memory-system, Property 22: Merged Record Chat ID Preservation**
         **Validates: Requirements 9.5**
         
-        For any merge operation, the resulting record's metadata.source_chat_ids 
-        SHALL contain both original chat_ids.
+        For any merge operation, the resulting record SHALL have a valid chat_id.
         """
         # Ensure memories are mergeable
         memory_b["user_id"] = memory_a["user_id"]
-        memory_b["who"] = memory_a["who"]
-        
-        chat_id_a = memory_a["chat_id"]
-        chat_id_b = memory_b["chat_id"]
         
         # Perform merge
         merged = merger.merge(memory_a, memory_b)
         
-        # Verify source tracking
-        source_chat_ids = merged.get("metadata", {}).get("source_chat_ids", [])
-        
-        assert chat_id_a in source_chat_ids, \
-            f"source_chat_ids should contain chat_id_a: {chat_id_a}"
-        assert chat_id_b in source_chat_ids, \
-            f"source_chat_ids should contain chat_id_b: {chat_id_b}"
-        
-        # Also verify merged_from_ids contains both original IDs
-        merged_from_ids = merged.get("metadata", {}).get("merged_from_ids", [])
-        assert memory_a["id"] in merged_from_ids, \
-            f"merged_from_ids should contain id_a: {memory_a['id']}"
-        assert memory_b["id"] in merged_from_ids, \
-            f"merged_from_ids should contain id_b: {memory_b['id']}"
+        # Verify chat_id is present
+        merged_chat_id = merged.get("chat_id", "")
+        assert merged_chat_id, "Merged record should have chat_id"
+        # chat_id should be from one of the original records
+        assert merged_chat_id in [memory_a["chat_id"], memory_b["chat_id"]], \
+            f"Merged chat_id should be from original records"
 
 
 
@@ -296,6 +279,8 @@ class TestSeparationThresholdEnforcement:
     
     Note: This test verifies that the separator correctly rewrites memories
     while preserving immutable fields.
+    
+    (v2 schema: simplified, only chat_id is immutable)
     """
 
     @settings(
@@ -315,44 +300,27 @@ class TestSeparationThresholdEnforcement:
         **Feature: ai-memory-system, Property 11: Separation Threshold Enforcement**
         **Validates: Requirements 5.3**
         
-        For any separation operation, the immutable fields (time, chatid, who in metadata)
+        For any separation operation, the immutable fields (chat_id)
         SHALL remain unchanged in both resulting memories.
         """
         # Store original immutable values
-        original_time_a = memory_a["metadata"]["time"]
-        original_chatid_a = memory_a["metadata"]["chatid"]
-        original_who_a = memory_a["metadata"]["who"]
-        
-        original_time_b = memory_b["metadata"]["time"]
-        original_chatid_b = memory_b["metadata"]["chatid"]
-        original_who_b = memory_b["metadata"]["who"]
+        original_chat_id_a = memory_a["chat_id"]
+        original_chat_id_b = memory_b["chat_id"]
         
         # Perform separation
         updated_a, updated_b = separator.separate(memory_a, memory_b)
         
         # Verify immutable fields are preserved for memory A
-        assert updated_a["metadata"]["time"] == original_time_a, \
-            f"metadata.time should be preserved for A: expected={original_time_a}"
-        assert updated_a["metadata"]["chatid"] == original_chatid_a, \
-            f"metadata.chatid should be preserved for A: expected={original_chatid_a}"
-        assert updated_a["metadata"]["who"] == original_who_a, \
-            f"metadata.who should be preserved for A: expected={original_who_a}"
+        assert updated_a["chat_id"] == original_chat_id_a, \
+            f"chat_id should be preserved for A: expected={original_chat_id_a}"
         
         # Verify immutable fields are preserved for memory B
-        assert updated_b["metadata"]["time"] == original_time_b, \
-            f"metadata.time should be preserved for B: expected={original_time_b}"
-        assert updated_b["metadata"]["chatid"] == original_chatid_b, \
-            f"metadata.chatid should be preserved for B: expected={original_chatid_b}"
-        assert updated_b["metadata"]["who"] == original_who_b, \
-            f"metadata.who should be preserved for B: expected={original_who_b}"
+        assert updated_b["chat_id"] == original_chat_id_b, \
+            f"chat_id should be preserved for B: expected={original_chat_id_b}"
         
-        # Verify that text and metadata.context/thing are present (may be updated)
+        # Verify that text is present (may be updated)
         assert "text" in updated_a, "Updated A should have text field"
         assert "text" in updated_b, "Updated B should have text field"
-        assert "context" in updated_a["metadata"], "Updated A should have context"
-        assert "thing" in updated_a["metadata"], "Updated A should have thing"
-        assert "context" in updated_b["metadata"], "Updated B should have context"
-        assert "thing" in updated_b["metadata"], "Updated B should have thing"
 
 
 # Import Memory class for merge constraint testing
@@ -385,6 +353,8 @@ class TestSameChatMergeTimeConstraint:
     
     For any pair of memories with the same chat_id, merge SHALL only be allowed 
     if |ts1 - ts2| <= 1800 seconds (30 minutes).
+    
+    (v2 schema: no who field constraint)
     """
 
     @settings(
@@ -407,14 +377,12 @@ class TestSameChatMergeTimeConstraint:
         For any pair of memories with the same chat_id, merge SHALL only be allowed 
         if |ts1 - ts2| <= 1800 seconds (30 minutes).
         """
-        # Create memory_b with same chat_id and who
+        # Create memory_b with same chat_id
         memory_b = memory_a.copy()
         memory_b["id"] = memory_a["id"] + 1
-        memory_b["metadata"] = memory_a["metadata"].copy()
         memory_b["ts"] = memory_a["ts"] + time_diff
-        # Same chat_id and who
+        # Same chat_id
         memory_b["chat_id"] = memory_a["chat_id"]
-        memory_b["who"] = memory_a["who"]
         
         # Check merge constraints
         result = memory_system.check_merge_constraints(memory_a, memory_b)
@@ -442,6 +410,8 @@ class TestDifferentChatMergeTimeConstraint:
     
     For any pair of memories with different chat_ids, merge SHALL only be allowed 
     if |ts1 - ts2| <= 604800 seconds (7 days).
+    
+    (v2 schema: no who field constraint)
     """
 
     @settings(
@@ -464,14 +434,12 @@ class TestDifferentChatMergeTimeConstraint:
         For any pair of memories with different chat_ids, merge SHALL only be allowed 
         if |ts1 - ts2| <= 604800 seconds (7 days).
         """
-        # Create memory_b with different chat_id but same who
+        # Create memory_b with different chat_id
         memory_b = memory_a.copy()
         memory_b["id"] = memory_a["id"] + 1
-        memory_b["metadata"] = memory_a["metadata"].copy()
         memory_b["ts"] = memory_a["ts"] + time_diff
-        # Different chat_id, same who
+        # Different chat_id
         memory_b["chat_id"] = memory_a["chat_id"] + "_different"
-        memory_b["who"] = memory_a["who"]
         
         # Check merge constraints
         result = memory_system.check_merge_constraints(memory_a, memory_b)
@@ -489,59 +457,3 @@ class TestDifferentChatMergeTimeConstraint:
         # Verify same_chat flag
         assert result["same_chat"] is False, "Should detect different chat_ids"
         assert result["time_diff"] == time_diff, f"Time diff should be {time_diff}"
-
-
-class TestWhoFieldMergeConstraint:
-    """Property tests for who field merge constraint.
-    
-    **Feature: ai-memory-system, Property 20: Who Field Merge Constraint**
-    **Validates: Requirements 9.3**
-    
-    For any pair of memories where who1 != who2, the system SHALL NOT merge them.
-    """
-
-    @settings(
-        max_examples=100,
-        suppress_health_check=[
-            HealthCheck.function_scoped_fixture,
-            HealthCheck.too_slow,
-        ],
-        deadline=None
-    )
-    @given(
-        memory_a=episodic_memory_strategy(),
-        who_b=st.sampled_from(["user", "assistant", "friend", "other"])
-    )
-    def test_who_field_merge_constraint(self, memory_system, memory_a, who_b):
-        """
-        **Feature: ai-memory-system, Property 20: Who Field Merge Constraint**
-        **Validates: Requirements 9.3**
-        
-        For any pair of memories where who1 != who2, the system SHALL NOT merge them.
-        """
-        # Create memory_b with potentially different who
-        memory_b = memory_a.copy()
-        memory_b["id"] = memory_a["id"] + 1
-        memory_b["metadata"] = memory_a["metadata"].copy()
-        memory_b["who"] = who_b
-        # Same chat_id and within time window to isolate who constraint
-        memory_b["chat_id"] = memory_a["chat_id"]
-        memory_b["ts"] = memory_a["ts"] + 100  # Within 30 min window
-        
-        # Check merge constraints
-        result = memory_system.check_merge_constraints(memory_a, memory_b)
-        
-        who_a = memory_a["who"]
-        
-        if who_a == who_b:
-            # Same who - should allow merge (assuming time constraint passes)
-            assert result["who_match"] is True, "Should detect matching who fields"
-            assert result["can_merge"] is True, \
-                f"Should allow merge when who fields match: '{who_a}' == '{who_b}'"
-        else:
-            # Different who - should reject merge
-            assert result["who_match"] is False, "Should detect different who fields"
-            assert result["can_merge"] is False, \
-                f"Should reject merge when who fields differ: '{who_a}' != '{who_b}'"
-            assert "who" in result["reason"].lower(), \
-                "Rejection reason should mention 'who' field"

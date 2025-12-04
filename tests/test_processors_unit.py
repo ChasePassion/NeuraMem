@@ -1,4 +1,7 @@
-"""Unit tests for processor functionality."""
+"""Unit tests for processor functionality.
+
+v2 schema: simplified, only core fields (no who, hit_count, metadata)
+"""
 
 from src.memory_system.processors.reconsolidator import EpisodicReconsolidator
 from src.memory_system.processors.separator import EpisodicSeparator
@@ -12,113 +15,70 @@ class MockLLM:
         return ""  # Empty means keep
 
 
-def test_reconsolidation_preserves_fields():
-    """Test that reconsolidation preserves immutable fields."""
+def test_reconsolidation_preserves_chat_id():
+    """Test that reconsolidation preserves chat_id field (v2 schema)."""
     reconsolidator = EpisodicReconsolidator(MockLLM())
     
     old_memory = {
         'id': 1,
         'user_id': 'test_user',
         'chat_id': 'chat-original',
-        'who': 'user',
         'text': 'Original text',
-        'metadata': {
-            'time': '2025-01-01T10:00:00Z',
-            'chatid': 'chat-original',
-            'who': 'user',
-            'context': 'original context',
-            'thing': 'original thing',
-            'updates': []
-        }
     }
     
     updated = reconsolidator.reconsolidate(old_memory, "New context information")
     
-    # Verify immutable fields preserved
-    assert updated['metadata']['time'] == '2025-01-01T10:00:00Z'
+    # Verify chat_id preserved (v2 schema)
     assert updated['chat_id'] == 'chat-original'
-    assert updated['who'] == 'user'
-    assert updated['metadata']['chatid'] == 'chat-original'
-    assert updated['metadata']['who'] == 'user'
 
 
-def test_reconsolidation_grows_updates():
-    """Test that reconsolidation grows updates array."""
+def test_reconsolidation_updates_text():
+    """Test that reconsolidation updates text field (v2 schema)."""
     reconsolidator = EpisodicReconsolidator(MockLLM())
     
     old_memory = {
         'id': 1,
         'user_id': 'test_user',
         'chat_id': 'chat-1',
-        'who': 'user',
         'text': 'Test',
-        'metadata': {
-            'time': '2025-01-01T10:00:00Z',
-            'chatid': 'chat-1',
-            'who': 'user',
-            'context': 'test',
-            'thing': 'test',
-            'updates': [
-                {'time': '2025-01-02T10:00:00Z', 'desc': 'First update'}
-            ]
-        }
     }
     
     updated = reconsolidator.reconsolidate(old_memory, "New info")
     
-    # Verify updates array grew
-    assert len(updated['metadata']['updates']) >= 2
+    # Verify text field is present and non-empty
+    assert 'text' in updated
+    assert updated['text']
 
 
-def test_separator_preserves_immutable_fields():
-    """Test that separator preserves immutable fields."""
+def test_separator_preserves_chat_id():
+    """Test that separator preserves chat_id field (v2 schema)."""
     separator = EpisodicSeparator(MockLLM())
     
     memory_a = {
         'id': 1,
         'user_id': 'test_user',
         'chat_id': 'chat-a',
-        'who': 'user',
         'text': 'Memory A',
-        'metadata': {
-            'time': '2025-01-01T10:00:00Z',
-            'chatid': 'chat-a',
-            'who': 'user',
-            'context': 'context a',
-            'thing': 'thing a'
-        }
     }
     
     memory_b = {
         'id': 2,
         'user_id': 'test_user',
         'chat_id': 'chat-b',
-        'who': 'friend',
         'text': 'Memory B',
-        'metadata': {
-            'time': '2025-01-02T10:00:00Z',
-            'chatid': 'chat-b',
-            'who': 'friend',
-            'context': 'context b',
-            'thing': 'thing b'
-        }
     }
     
     updated_a, updated_b = separator.separate(memory_a, memory_b)
     
-    # Verify immutable fields preserved for A
-    assert updated_a['metadata']['time'] == '2025-01-01T10:00:00Z'
-    assert updated_a['metadata']['chatid'] == 'chat-a'
-    assert updated_a['metadata']['who'] == 'user'
+    # Verify chat_id preserved for A (v2 schema)
+    assert updated_a['chat_id'] == 'chat-a'
     
-    # Verify immutable fields preserved for B
-    assert updated_b['metadata']['time'] == '2025-01-02T10:00:00Z'
-    assert updated_b['metadata']['chatid'] == 'chat-b'
-    assert updated_b['metadata']['who'] == 'friend'
+    # Verify chat_id preserved for B (v2 schema)
+    assert updated_b['chat_id'] == 'chat-b'
 
 
 if __name__ == '__main__':
-    test_reconsolidation_preserves_fields()
-    test_reconsolidation_grows_updates()
-    test_separator_preserves_immutable_fields()
+    test_reconsolidation_preserves_chat_id()
+    test_reconsolidation_updates_text()
+    test_separator_preserves_chat_id()
     print('All processor unit tests passed!')

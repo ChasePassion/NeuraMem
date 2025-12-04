@@ -19,21 +19,28 @@ class MilvusStore:
     """Milvus vector store wrapper for memory operations.
     
     Provides CRUD operations for the memories collection with
-    support for dynamic fields and vector similarity search.
+    support for vector similarity search.
+    
+    Simplified schema (v2):
+    - id: INT64, primary key, auto_id
+    - user_id: VARCHAR(128), user identifier
+    - memory_type: VARCHAR(32), "episodic" or "semantic"
+    - ts: INT64, Unix timestamp of write time
+    - chat_id: VARCHAR(128), conversation/thread identifier
+    - text: VARCHAR(65535), main natural-language content used for embedding and search
+            (includes time, where, who, thing, reason)
+    - vector: FLOAT_VECTOR(2560), embedding vector for similarity search
     """
     
-    # Schema field definitions
+    # Schema field definitions (simplified v2)
     SCHEMA_FIELDS = [
         ("id", DataType.INT64, {"is_primary": True, "auto_id": True}),
         ("user_id", DataType.VARCHAR, {"max_length": 128}),
         ("memory_type", DataType.VARCHAR, {"max_length": 32}),
         ("ts", DataType.INT64, {}),
         ("chat_id", DataType.VARCHAR, {"max_length": 128}),
-        ("who", DataType.VARCHAR, {"max_length": 64}),
         ("text", DataType.VARCHAR, {"max_length": 65535}),
         ("vector", DataType.FLOAT_VECTOR, {"dim": 2560}),
-        ("hit_count", DataType.INT64, {}),
-        ("metadata", DataType.JSON, {}),
     ]
     
     def __init__(
