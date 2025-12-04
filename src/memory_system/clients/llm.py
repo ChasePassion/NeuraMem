@@ -1,0 +1,193 @@
+"""LLM client for OpenRouter API with DeepSeek fallback."""
+
+import json
+import time
+import logging
+from typing import Dict, Any, Optional
+
+from openai import OpenAI
+
+from ..exceptions import OpenRouterError
+
+logger = logging.getLogger(__name__)
+
+
+class LLMClient:
+    """LLM model client using OpenRouter API with optional DeepSeek fallback."""
+    
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://api.deepseek.com",
+        model: str = "deepseek-chat",
+        fallback_api_key: Optional[str] = None,
+        fallback_base_url: Optional[str] = None,
+        fallback_model: Optional[str] = None,
+    ):
+        """Initialize LLM client.
+        
+        Args:
+            api_key: API key (default: DeepSeek)
+            base_url: Base URL for API (default: DeepSeek)
+            model: Model ID for LLM (default: deepseek-chat)
+            fallback_api_key: Optional fallback API key (OpenRouter)
+            fallback_base_url: Optional fallback base URL
+            fallback_model: Optional fallback model ID
+        """
+        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        self._model = model
+        
+        self._fallback_client = None
+        self._fallback_model = None
+        if fallback_api_key and fallback_base_url and fallback_model:
+            self._fallback_client = OpenAI(
+                api_key=fallback_api_key, base_url=fallback_base_url
+            )
+            self._fallback_model = fallback_model
+        
+        self._max_retries = 3
+        self._base_delay = 1.0
+    
+    def chat(self, system_prompt: str, user_message: str) -> str:
+        """Call LLM for text response.
+        
+        Args:
+            system_prompt: System prompt for the LLM
+            user_message: User message to process
+            
+        Returns:
+            LLM response text
+            
+        Raises:
+            OpenRouterError: If API call fails after retries
+        """
+        try:
+            return self._chat_with_retries(
+                client=self._client,
+                model=self._model,
+                system_prompt=system_prompt,
+                user_message=user_message,
+            )
+        except OpenRouterError as primary_error:
+            if not self._fallback_client:
+                raise
+            
+            logger.warning(
+                "Primary OpenRouter LLM failed; falling back to DeepSeek: %s",
+                primary_error,
+            )
+            try:
+                return self._chat_with_retries(
+                    client=self._fallback_client,
+                    model=self._fallback_model,
+                    system_prompt=system_prompt,
+                    user_message=user_message,
+                )
+            except OpenRouterError as fallback_error:
+                # Surface combined failure context
+                raise OpenRouterError(
+                    f"{self._model} (primary + fallback {self._fallback_model})",
+                    self._max_retries,
+                    fallback_error.last_error,
+                ) from fallback_error
+    
+    def chat_json(
+        self,
+        system_prompt: str,
+        user_message: str,
+        default: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """Call LLM and parse JSON response with safe fallback.
+        
+        Args:
+            system_prompt: System prompt for the LLM
+            user_message: User message to process
+            default: Default value to return if JSON parsing fails
+            
+        Returns:
+            Parsed JSON response or default value
+        """
+        if default is None:
+            default = {}
+        
+        try:
+            response_text = self.chat(system_prompt, user_message)
+            return self._safe_parse_json(response_text, default)
+        except OpenRouterError:
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in chat_json: {e}")
+            return default
+    
+    def _safe_parse_json(
+        self,
+        response: str,
+        default: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Parse JSON response with fallback to default.
+        
+        Args:
+            response: Raw response text from LLM
+            default: Default value if parsing fails
+            
+        Returns:
+            Parsed JSON or default value
+        """
+        if not response:
+            logger.error("Empty response from LLM")
+            return default
+        
+        # Try to extract JSON from response (handle markdown code blocks)
+        text = response.strip()
+        
+        # Remove markdown code block if present
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        
+        if text.endswith("```"):
+            text = text[:-3]
+        
+        text = text.strip()
+        
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON response: {e}. Response: {response[:200]}")
+            return default
+
+    def _chat_with_retries(
+        self,
+        client: OpenAI,
+        model: str,
+        system_prompt: str,
+        user_message: str,
+    ) -> str:
+        """Call a specific client with retries."""
+        last_error: Optional[Exception] = None
+        
+        for attempt in range(self._max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ],
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "LLM API attempt %s/%s for model %s failed: %s",
+                    attempt + 1,
+                    self._max_retries,
+                    model,
+                    e,
+                )
+                if attempt < self._max_retries - 1:
+                    delay = self._base_delay * (2**attempt)
+                    time.sleep(delay)
+        
+        raise OpenRouterError(model, self._max_retries, last_error)

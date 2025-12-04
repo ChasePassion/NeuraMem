@@ -1,0 +1,4 @@
+# file: E:\code\AI_meta_memory_system\src\memory_system\clients\milvus_store.py
+# hypothesis_version: 6.148.5
+
+[100, 128, 2560, 65535, '*', ',', 'AUTOINDEX', 'COSINE', 'auto_id', 'chat_id', 'dim', 'distance', 'entity', 'hit_count', 'id', 'ids', 'is_primary', 'max_length', 'memories', 'memory_type', 'metadata', 'row_count', 'text', 'ts', 'user_id', 'vector', 'who']

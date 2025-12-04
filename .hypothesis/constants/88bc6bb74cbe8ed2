@@ -1,0 +1,4 @@
+# file: E:\code\AI_meta_memory_system\src\memory_system\memory.py
+# hypothesis_version: 6.148.5
+
+[0.0, 0.05, 0.1, 1.0, 1.2, 1000, 86400, ' and ', 'can_merge', 'chat_id', 'chatid', 'content', 'context', 'distance', 'distinct', 'episodic', 'fact', 'first_seen', 'hit_count', 'id', 'memory_type', 'merge', 'metadata', 'reason', 'role', 'same_chat', 'semantic', 'separate', 'similarity', 'source_chatid', 'text', 'thing', 'time', 'time_constraint', 'time_diff', 'ts', 'user', 'user_id', 'vector', 'who', 'who_match']

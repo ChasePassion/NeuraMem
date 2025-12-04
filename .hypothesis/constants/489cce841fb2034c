@@ -1,0 +1,4 @@
+# file: E:\code\AI_meta_memory_system\src\memory_system\processors\write_decider.py
+# hypothesis_version: 6.148.5
+
+['chat_id', 'context', 'metadata', 'records', 'text', 'thing', 'turns', 'user', 'who', 'write_episodic']
