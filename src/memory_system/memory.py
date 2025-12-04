@@ -4,6 +4,7 @@ Provides a mem0-style interface for memory operations including
 add, search, update, delete, reset, and consolidate.
 """
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -171,6 +172,51 @@ class Memory:
         
         return ids
 
+    async def add_async(
+        self,
+        text: str,
+        user_id: str,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> List[int]:
+        """Async variant of add that offloads blocking steps to a thread pool."""
+        turns = [{"role": "user", "content": text}]
+
+        # Decide whether to write episodic memory (LLM call in background thread)
+        decision = await asyncio.to_thread(self._write_decider.decide, chat_id, turns)
+
+        if not decision.write_episodic or not decision.records:
+            logger.info(f"No episodic memory to write for user={user_id}, chat={chat_id}")
+            return []
+
+        texts_to_embed = [record.text for record in decision.records]
+
+        # Embedding + Milvus insert are synchronous; run them in threads to avoid blocking event loop
+        embeddings = await asyncio.to_thread(self._embedding_client.encode, texts_to_embed)
+
+        current_ts = int(time.time())
+        entities = []
+
+        for i, record in enumerate(decision.records):
+            entity = {
+                "user_id": user_id,
+                "memory_type": "episodic",
+                "ts": current_ts,
+                "chat_id": chat_id,
+                "text": record.text,
+                "vector": embeddings[i],
+            }
+            entities.append(entity)
+
+        ids = await asyncio.to_thread(self._store.insert, entities)
+
+        logger.info(
+            f"Memory operation 'add_async': type=episodic, user_id={user_id}, "
+            f"chat_id={chat_id}, affected_count={len(ids)}"
+        )
+
+        return ids
+
     def search(
         self,
         query: str,
@@ -257,6 +303,15 @@ class Memory:
         )
         
         return ranked_results
+
+    async def reconsolidate_async(
+        self,
+        query: str,
+        user_id: str,
+        limit: int = 10
+    ) -> List[MemoryRecord]:
+        """Async helper to reconsolidate episodic memories without blocking event loop."""
+        return await asyncio.to_thread(self.search, query, user_id, limit, True)
     
     def _reconsolidate_episodic_memories(
         self,

@@ -1,3 +1,14 @@
+MEMORY_ANSWER_PROMPT = """
+You are an expert at answering questions based on the provided memories. Your task is to provide accurate and concise answers to the questions by leveraging the information given in the memories.
+
+There are two kind of memories.The first one is episodic memories(what user do),the second one is semantic memories(what user is),you should pay more attention to the semantic memories.
+
+Guidelines:
+- Extract relevant information from the memories based on the question.
+- If no relevant information is found, make sure you don't say no information is found. Instead, accept the question and provide a general response.
+- Ensure that the answers are clear, concise, and directly address the question.
+"""
+
 SEMANTIC_MEMORY_WRITER_PROMPT="""You are a "Semantic Memory Writer" (SemanticWriter) in a long-term memory system. 
 Your role is to inspect a SINGLE episodic memory record and decide whether it contains any 
 stable, long-term facts that should be promoted into semantic memory.

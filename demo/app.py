@@ -9,9 +9,11 @@ Features:
 """
 
 import gradio as gr
+import asyncio
 import time
 import json
 import threading
+import logging
 from datetime import datetime
 from typing import List, Dict, Any, Tuple, Optional
 import sys
@@ -21,6 +23,9 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.memory_system import Memory, MemoryConfig, MemoryRecord, ConsolidationStats
+
+# Setup logger
+logger = logging.getLogger(__name__)
 
 
 class MemoryDemoApp:
@@ -119,71 +124,201 @@ class MemoryDemoApp:
         except Exception as e:
             return f"❌ 获取记忆失败: {str(e)}"
 
-    def chat(self, message: str, history: List[Tuple[str, str]]) -> Tuple[str, List[Tuple[str, str]], str]:
-        """Process chat message and update memories, then call DeepSeek for response."""
+    async def chat(self, message: str, history: List[Tuple[str, str]]) -> Tuple[str, List[Tuple[str, str]], str]:
+        """Process chat message with optimized flow: search → respond → async add memory."""
         if not self.memory:
-            return "", history + [(message, "⚠️ 请先初始化记忆系统")], self.get_all_memories()
+            return "", history + [(message, "⚠️ 请先初始化记忆系统")], await asyncio.to_thread(self.get_all_memories)
         
         if not message.strip():
-            return "", history, self.get_all_memories()
+            return "", history, await asyncio.to_thread(self.get_all_memories)
         
         try:
-            chat_id = f"chat_{int(time.time())}"
+            # 1. 准备消息和上下文
+            prepared_messages = self._prepare_messages(message, history)
             
-            # Add memory from user message
-            ids = self.memory.add(
-                text=message,
-                user_id=self.current_user_id,
-                chat_id=chat_id
+            # 2. 检索相关记忆（禁用同步重巩固，避免阻塞）
+            relevant_memories = await asyncio.to_thread(
+                self.memory.search,
+                message,
+                self.current_user_id,
+                5,
+                False  # reconsolidate off here; we handle asynchronously later
             )
             
-            # Search relevant memories
+            # 3. 构建完整上下文（传入 history）
+            full_context = self._build_context_with_memories(message, relevant_memories, history)
+            
+            # 4. 调用LLM生成回复（放在线程池中执行）
+            ai_response = await asyncio.to_thread(self._generate_response, full_context, prepared_messages)
+            
+            # 5. 异步巩固与写入：不阻塞当前回复
+            asyncio.create_task(self._reconsolidate_async(message))
+            asyncio.create_task(self._add_to_memory_async(message, history))
+            
+            # 构建最终响应
+            final_response = ai_response
+            new_history = history + [(message, final_response)]
+            return "", new_history, await asyncio.to_thread(self.get_all_memories)
+            
+        except Exception as e:
+            error_msg = f"❌ 处理失败: {str(e)}"
+            return "", history + [(message, error_msg)], await asyncio.to_thread(self.get_all_memories)
+    
+    def _prepare_messages(self, message: str, history: List[Tuple[str, str]]) -> List[Dict]:
+        """准备和标准化消息，包含历史对话上下文。"""
+        messages = []
+        
+        # 添加历史对话（最近50轮）
+        for user_msg, ai_msg in history[-50:]:
+            messages.append({"role": "user", "content": user_msg})
+            messages.append({"role": "assistant", "content": ai_msg})
+        
+        # 添加当前消息
+        messages.append({"role": "user", "content": message})
+        
+        return messages
+    
+    def _fetch_relevant_memories(self, query: str) -> List[MemoryRecord]:
+        """检索相关记忆。"""
+        try:
             results = self.memory.search(
-                query=message,
+                query=query,
                 user_id=self.current_user_id,
                 limit=5,
                 reconsolidate=True
             )
-            
-            # Build memory context for LLM
-            memory_context = ""
-            if results:
-                memory_context = "\n\n相关记忆:\n"
-                for r in results[:3]:
-                    memory_context += f"- {r.text} (类型:{r.memory_type})\n"
-            
-            # Generate response using DeepSeek
-            system_prompt = f"""你是一个具有长期记忆能力的AI助手。用户ID: {self.current_user_id}
-请根据用户的消息和相关记忆来回答。如果有相关记忆，请在回答中体现出你记住了用户的信息。
-保持友好、自然的对话风格。
-{memory_context if memory_context else "当前无相关记忆"}"""
-            
-            try:
-                ai_response = self.memory._llm_client.chat(system_prompt, message)
-            except Exception as llm_error:
-                ai_response = f"抱歉，我暂时无法生成回复。错误: {str(llm_error)}"
-            
-            # Add memory status info
-            if ids:
-                memory_status = f"\n\n💾 已记录此次对话"
-            else:
-                memory_status = "\n\n💭 此次对话未触发记忆存储"
-            
-            final_response = ai_response + memory_status
-            new_history = history + [(message, final_response)]
-            return "", new_history, self.get_all_memories()
-            
+            return results
         except Exception as e:
-            error_msg = f"❌ 处理失败: {str(e)}"
-            return "", history + [(message, error_msg)], self.get_all_memories()
+            logger.warning(f"Failed to fetch memories: {e}")
+            return []
     
-    def run_consolidation(self, progress=gr.Progress()) -> Tuple[str, str]:
+    def _build_context_with_memories(self, message: str, memories: List[MemoryRecord], history: List[Tuple[str, str]]) -> str:
+        """构建包含记忆的完整上下文。"""
+        context_parts = []
+        
+        # 分离情景记忆和语义记忆
+        episodic_memories = [mem for mem in memories if mem.memory_type == "episodic"]
+        semantic_memories = [mem for mem in memories if mem.memory_type == "semantic"]
+        
+        # 1. 情景记忆部分
+        context_parts.append("Here are the episodic memories:")
+        if episodic_memories:
+            for i, mem in enumerate(episodic_memories[:3], 1):
+                context_parts.append(f"{i}. {mem.text}")
+        else:
+            context_parts.append("(No episodic memories)")
+        context_parts.append("")
+        
+        # 2. 语义记忆部分
+        context_parts.append("Here are the semantic memories:")
+        if semantic_memories:
+            for i, mem in enumerate(semantic_memories[:3], 1):
+                context_parts.append(f"{i}. {mem.text}")
+        else:
+            context_parts.append("(No semantic memories)")
+        context_parts.append("")
+        
+        # 3. 历史对话部分
+        context_parts.append("Here are the history messages:")
+        if history:
+            for i, (user_msg, ai_msg) in enumerate(history[-3:], 1):
+                context_parts.append(f"Turn {i}:")
+                context_parts.append(f"  User: {user_msg}")
+                context_parts.append(f"  Assistant: {ai_msg}")
+        else:
+            context_parts.append("(No history messages)")
+        context_parts.append("")
+        
+        # 4. 当前任务
+        context_parts.append("Here are the task:")
+        context_parts.append(message)
+        
+        return "\n".join(context_parts)
+    
+    def _generate_response(self, context: str, messages: List[Dict]) -> str:
+        """使用LLM生成回复。"""
+        # 导入 MEMORY_ANSWER_PROMPT
+        try:
+            from prompts import MEMORY_ANSWER_PROMPT
+            system_prompt = f"{MEMORY_ANSWER_PROMPT}\n\nUser ID: {self.current_user_id}\n\n{context}"
+        except ImportError:
+            system_prompt = f"""You are an AI assistant with long-term memory capabilities. User ID: {self.current_user_id}
+Please answer based on the user's messages and relevant memories. If there are relevant memories, reflect that you remember the user's information in your response.
+Maintain a friendly and natural conversation style.
+
+{context}"""
+        
+        try:
+            # 获取最后一条用户消息
+            user_message = messages[-1]["content"] if messages else ""
+            ai_response = self.memory._llm_client.chat(system_prompt, user_message)
+            return ai_response
+        except Exception as llm_error:
+            return f"抱歉，我暂时无法生成回复。错误: {str(llm_error)}"
+    
+    async def _add_to_memory_async(self, message: str, history: List[Tuple[str, str]]) -> None:
+        """异步添加记忆到后台（不阻塞 Gradio 事件循环）。"""
+        try:
+            chat_id = f"chat_{int(time.time())}"
+            
+            # 构建完整的对话上下文用于记忆提取
+            conversation_context = self._build_conversation_context(message, history)
+            
+            # 优先使用异步版本，未实现时回退到线程池封装的同步接口
+            if hasattr(self.memory, "add_async"):
+                await self.memory.add_async(
+                    text=conversation_context,
+                    user_id=self.current_user_id,
+                    chat_id=chat_id
+                )
+            else:
+                await asyncio.to_thread(
+                    self.memory.add,
+                    conversation_context,
+                    self.current_user_id,
+                    chat_id
+                )
+        except Exception as e:
+            logger.warning(f"Async memory add failed: {e}")
+
+    async def _reconsolidate_async(self, query: str) -> None:
+        """异步巩固检索到的情景记忆，避免阻塞响应。"""
+        try:
+            if hasattr(self.memory, "reconsolidate_async"):
+                await self.memory.reconsolidate_async(query, self.current_user_id)
+            else:
+                # 回落：在后台线程调用带 reconsolidate 的 search
+                await asyncio.to_thread(
+                    self.memory.search,
+                    query,
+                    self.current_user_id,
+                    5,
+                    True
+                )
+        except Exception as e:
+            logger.warning(f"Async reconsolidation failed: {e}")
+    
+    def _build_conversation_context(self, message: str, history: List[Tuple[str, str]]) -> str:
+        """构建用于记忆提取的对话上下文。"""
+        # 包含最近的对话历史（最多3轮）
+        context_parts = []
+        
+        for user_msg, ai_msg in history[-3:]:
+            context_parts.append(f"用户: {user_msg}")
+            context_parts.append(f"助手: {ai_msg}")
+        
+        # 添加当前消息
+        context_parts.append(f"用户: {message}")
+        
+        return "\n".join(context_parts)
+    
+    async def run_consolidation(self, progress=gr.Progress()) -> Tuple[str, str]:
         """Run memory consolidation with progress updates."""
         if not self.memory:
-            return "⚠️ 请先初始化记忆系统", self.get_all_memories()
+            return "⚠️ 请先初始化记忆系统", await asyncio.to_thread(self.get_all_memories)
         
         if self.is_consolidating:
-            return "⏳ 巩固任务正在进行中...", self.get_all_memories()
+            return "⏳ 巩固任务正在进行中...", await asyncio.to_thread(self.get_all_memories)
         
         self.is_consolidating = True
         self.consolidation_log = []
@@ -192,8 +327,8 @@ class MemoryDemoApp:
             self.consolidation_log.append(f"🚀 开始巩固 - {datetime.now().strftime('%H:%M:%S')}")
             progress(0.1, desc="正在查询记忆...")
             
-            # Run consolidation
-            stats = self.memory.consolidate(user_id=self.current_user_id)
+            # Run consolidation in a worker thread to keep UI responsive
+            stats = await asyncio.to_thread(self.memory.consolidate, user_id=self.current_user_id)
             
             progress(0.9, desc="巩固完成")
             
@@ -207,26 +342,26 @@ class MemoryDemoApp:
             self.consolidation_log.extend(log)
             progress(1.0, desc="完成")
             
-            return "\n".join(self.consolidation_log), self.get_all_memories()
+            return "\n".join(self.consolidation_log), await asyncio.to_thread(self.get_all_memories)
             
         except Exception as e:
             error = f"❌ 巩固失败: {str(e)}"
             self.consolidation_log.append(error)
-            return "\n".join(self.consolidation_log), self.get_all_memories()
+            return "\n".join(self.consolidation_log), await asyncio.to_thread(self.get_all_memories)
         finally:
             self.is_consolidating = False
     
-    def reset_memories(self) -> Tuple[str, str]:
+    async def reset_memories(self) -> Tuple[str, str]:
         """Reset all memories for current user."""
         if not self.memory:
             return "⚠️ 请先初始化记忆系统", ""
         
         try:
-            count = self.memory.reset(self.current_user_id)
+            count = await asyncio.to_thread(self.memory.reset, self.current_user_id)
             self.chat_history = []
-            return f"✅ 已删除 {count} 条记忆", self.get_all_memories()
+            return f"✅ 已删除 {count} 条记忆", await asyncio.to_thread(self.get_all_memories)
         except Exception as e:
-            return f"❌ 重置失败: {str(e)}", self.get_all_memories()
+            return f"❌ 重置失败: {str(e)}", await asyncio.to_thread(self.get_all_memories)
 
 
 def create_demo_interface():
