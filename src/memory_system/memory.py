@@ -24,16 +24,23 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MemoryRecord:
-    """A memory record returned from search operations."""
+    """A memory record returned from search operations.
+    
+    Simplified schema (v2):
+    - id: Record ID
+    - user_id: User identifier
+    - memory_type: "episodic" or "semantic"
+    - ts: Unix timestamp of write time
+    - chat_id: Conversation/thread identifier
+    - text: Main natural-language content (includes time, where, who, thing, reason)
+    - distance: Similarity score from search (0.0 = identical)
+    """
     id: int
     user_id: str
     memory_type: str
     ts: int
     chat_id: str
-    who: str
     text: str
-    hit_count: int
-    metadata: Dict[str, Any]
     distance: float = 0.0  # Similarity score from search
 
 
@@ -116,13 +123,14 @@ class Memory:
         """Add memories from conversation text.
         
         Processes text through EpisodicWriteDecider to determine if it should
-        be stored as episodic memory.
+        be stored as episodic memory. All information is integrated into the
+        text field for unified vector search.
         
         Args:
             text: Conversation text to process
             user_id: User identifier
             chat_id: Conversation/thread identifier
-            metadata: Optional additional metadata
+            metadata: Optional additional metadata (ignored in v2 schema)
             
         Returns:
             List of created memory IDs
@@ -143,33 +151,19 @@ class Memory:
         texts_to_embed = [record.text for record in decision.records]
         embeddings = self._embedding_client.encode(texts_to_embed)
         
-        # Prepare entities for insertion
+        # Prepare entities for insertion (simplified v2 schema)
         current_ts = int(time.time())
         entities = []
         
         for i, record in enumerate(decision.records):
-            # Build metadata with required fields
-            record_metadata = record.metadata.copy()
-            record_metadata.setdefault("context", "")
-            record_metadata.setdefault("thing", "")
-            record_metadata.setdefault("time", "")
-            record_metadata.setdefault("chatid", chat_id)
-            record_metadata.setdefault("who", record.who)
-            
-            # Merge with any additional metadata provided
-            if metadata:
-                record_metadata.update(metadata)
-            
+            # In v2 schema, all information is in the text field
             entity = {
                 "user_id": user_id,
                 "memory_type": "episodic",
                 "ts": current_ts,
                 "chat_id": chat_id,
-                "who": record.who,
                 "text": record.text,
                 "vector": embeddings[i],
-                "hit_count": 0,
-                "metadata": record_metadata
             }
             entities.append(entity)
         
@@ -193,7 +187,7 @@ class Memory:
         """Search memories for a user.
         
         Retrieves both episodic and semantic memories, ranks them by
-        similarity, type, time decay, and hit_count. Optionally reconsolidates
+        similarity, type, and time decay. Optionally reconsolidates
         episodic memories with the current query context.
         
         Args:
@@ -205,7 +199,7 @@ class Memory:
         Returns:
             Ranked list of MemoryRecord objects
             
-        Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.5
+        Requirements: 3.1, 3.2, 3.3, 3.4, 4.1, 4.5
         """
         # Generate embedding for query
         query_vectors = self._embedding_client.encode([query])
@@ -248,14 +242,11 @@ class Memory:
                 all_results.append(record)
                 episodic_hits.append(hit)
         
-        # Rank results by similarity, type, time decay, hit_count
+        # Rank results by similarity, type, and time decay
         ranked_results = self._rank_results(all_results)
         
         # Limit total results
         ranked_results = ranked_results[:limit]
-        
-        # Increment hit_count for retrieved memories
-        self._increment_hit_counts([r.id for r in ranked_results])
         
         # Reconsolidate episodic memories with current context (Requirements 4.1, 4.5)
         if reconsolidate and episodic_hits:
@@ -284,6 +275,8 @@ class Memory:
         calls EpisodicReconsolidator with current context, updates memory
         records with reconsolidated content, and regenerates embeddings.
         
+        In v2 schema, all information is stored in the text field.
+        
         Args:
             episodic_hits: List of episodic memory hits from search
             current_context: Current query/context text
@@ -309,7 +302,7 @@ class Memory:
                 old_text = hit.get("text", "")
                 new_text = updated_memory.get("text", "")
                 
-                # Prepare update data
+                # Prepare update data (v2 schema: only text and vector)
                 update_data = {}
                 
                 # Update text if changed
@@ -319,10 +312,6 @@ class Memory:
                     embeddings = self._embedding_client.encode([new_text])
                     if embeddings:
                         update_data["vector"] = embeddings[0]
-                
-                # Update metadata
-                if "metadata" in updated_memory:
-                    update_data["metadata"] = updated_memory["metadata"]
                 
                 # Apply updates to Milvus if there are changes
                 if update_data:
@@ -337,28 +326,24 @@ class Memory:
                 )
     
     def _hit_to_memory_record(self, hit: Dict[str, Any]) -> MemoryRecord:
-        """Convert a search hit to MemoryRecord."""
+        """Convert a search hit to MemoryRecord (v2 schema)."""
         return MemoryRecord(
             id=hit.get("id", 0),
             user_id=hit.get("user_id", ""),
             memory_type=hit.get("memory_type", ""),
             ts=hit.get("ts", 0),
             chat_id=hit.get("chat_id", ""),
-            who=hit.get("who", ""),
             text=hit.get("text", ""),
-            hit_count=hit.get("hit_count", 0),
-            metadata=hit.get("metadata", {}),
             distance=hit.get("distance", 0.0)
         )
     
     def _rank_results(self, results: List[MemoryRecord]) -> List[MemoryRecord]:
         """Rank search results by multiple factors.
         
-        Factors:
+        Factors (v2 schema - simplified):
         - Similarity score (distance, lower is better for COSINE)
         - Memory type (semantic weighted higher)
         - Time decay (recent episodic more important)
-        - Hit count (frequently used memories are important)
         """
         current_time = int(time.time())
         
@@ -375,27 +360,11 @@ class Memory:
                 age_days = (current_time - record.ts) / 86400
                 time_weight = 1.0 / (1.0 + age_days * 0.1)  # Decay factor
             
-            # Hit count boost
-            hit_weight = 1.0 + (record.hit_count * 0.05)
-            
-            return similarity * type_weight * time_weight * hit_weight
+            return similarity * type_weight * time_weight
         
         return sorted(results, key=score, reverse=True)
     
-    def _increment_hit_counts(self, ids: List[int]) -> None:
-        """Increment hit_count for retrieved memories."""
-        for memory_id in ids:
-            try:
-                # Query current record
-                records = self._store.query(
-                    filter_expr=f"id == {memory_id}",
-                    output_fields=["hit_count"]
-                )
-                if records:
-                    current_count = records[0].get("hit_count", 0)
-                    self._store.update(memory_id, {"hit_count": current_count + 1})
-            except Exception as e:
-                logger.warning(f"Failed to increment hit_count for {memory_id}: {e}")
+
 
     def update(self, memory_id: int, data: Dict[str, Any]) -> bool:
         """Update a memory record.
@@ -700,8 +669,7 @@ class Memory:
     ) -> Dict[str, Any]:
         """Check merge constraints between two memories.
         
-        Validates:
-        - Who field equality (Requirement 9.3)
+        Validates (v2 schema - simplified):
         - Time constraints based on chat_id (Requirements 9.1, 9.2)
         
         Args:
@@ -712,7 +680,6 @@ class Memory:
             Dict with:
                 - can_merge: bool indicating if merge is allowed
                 - reason: str explaining why merge is/isn't allowed
-                - who_match: bool indicating if who fields match
                 - same_chat: bool indicating if chat_ids match
                 - time_diff: int time difference in seconds
                 - time_constraint: int applicable time window in seconds
@@ -720,21 +687,10 @@ class Memory:
         result = {
             "can_merge": True,
             "reason": "All constraints satisfied",
-            "who_match": True,
             "same_chat": False,
             "time_diff": 0,
             "time_constraint": 0
         }
-        
-        # Check who field equality (Requirement 9.3)
-        who_a = memory_a.get("who", "")
-        who_b = memory_b.get("who", "")
-        result["who_match"] = (who_a == who_b)
-        
-        if not result["who_match"]:
-            result["can_merge"] = False
-            result["reason"] = f"Who fields differ: '{who_a}' != '{who_b}'"
-            return result
         
         # Check time constraints
         ts_a = memory_a.get("ts", 0)
@@ -772,7 +728,7 @@ class Memory:
         
         This is a convenience wrapper around check_merge_constraints().
         
-        Requirements: 9.1, 9.2, 9.3
+        Requirements: 9.1, 9.2
         """
         result = self.check_merge_constraints(memory_a, memory_b)
         return result["can_merge"]
@@ -783,6 +739,8 @@ class Memory:
         memory_b: Dict[str, Any]
     ) -> Optional[int]:
         """Merge two memories into one.
+        
+        In v2 schema, all information is stored in the text field.
         
         Requirements: 5.2, 5.4, 9.4, 9.5
         """
@@ -797,20 +755,21 @@ class Memory:
         if not embeddings:
             return None
         
-        merged["vector"] = embeddings[0]
-        merged["memory_type"] = "episodic"
-        merged["hit_count"] = max(
-            memory_a.get("hit_count", 0),
-            memory_b.get("hit_count", 0)
-        )
-        merged["ts"] = min(memory_a.get("ts", 0), memory_b.get("ts", 0))
-        merged["user_id"] = memory_a.get("user_id", "")
+        # Build v2 schema record
+        merged_record = {
+            "user_id": memory_a.get("user_id", ""),
+            "memory_type": "episodic",
+            "ts": min(memory_a.get("ts", 0), memory_b.get("ts", 0)),
+            "chat_id": memory_a.get("chat_id", ""),
+            "text": merged.get("text", ""),
+            "vector": embeddings[0],
+        }
         
         # Delete original records
         self._store.delete(ids=[memory_a.get("id"), memory_b.get("id")])
         
         # Insert merged record
-        ids = self._store.insert([merged])
+        ids = self._store.insert([merged_record])
         
         return ids[0] if ids else None
     
@@ -851,10 +810,10 @@ class Memory:
     ) -> List[int]:
         """Create semantic memories from extracted facts.
         
+        In v2 schema, all information is stored in the text field.
+        
         Requirements: 6.6
         """
-        from datetime import datetime, timezone
-        
         user_id = source_memory.get("user_id", "")
         source_chat_id = source_memory.get("chat_id", "")
         
@@ -868,20 +827,14 @@ class Memory:
         current_ts = int(time.time())
         
         for i, fact in enumerate(facts):
+            # In v2 schema, the fact is stored directly in text field
             entity = {
                 "user_id": user_id,
                 "memory_type": "semantic",
                 "ts": current_ts,
                 "chat_id": source_chat_id,
-                "who": source_memory.get("who", "user"),
                 "text": fact,
                 "vector": embeddings[i],
-                "hit_count": 0,
-                "metadata": {
-                    "fact": fact,
-                    "source_chatid": source_chat_id,
-                    "first_seen": datetime.now(timezone.utc).isoformat()
-                }
             }
             entities.append(entity)
         

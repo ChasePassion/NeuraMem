@@ -78,24 +78,17 @@ class EpisodicSeparator:
     def _extract_updatable_fields(self, memory: Dict[str, Any]) -> Dict[str, Any]:
         """Extract fields that can be updated during separation.
         
+        In v2 schema, only text field is updatable.
+        
         Args:
             memory: Original memory record
             
         Returns:
-            Dict with updatable fields
+            Dict with updatable fields (v2 schema)
         """
-        metadata = memory.get("metadata", {})
         return {
             "chat_id": memory.get("chat_id", ""),
-            "who": memory.get("who", "user"),
             "text": memory.get("text", ""),
-            "metadata": {
-                "context": metadata.get("context", ""),
-                "thing": metadata.get("thing", ""),
-                "time": metadata.get("time", ""),
-                "chatid": metadata.get("chatid", ""),
-                "who": metadata.get("who", "user")
-            }
         }
     
     def _apply_updates(
@@ -105,37 +98,23 @@ class EpisodicSeparator:
     ) -> Dict[str, Any]:
         """Apply LLM updates to original memory while preserving immutable fields.
         
+        In v2 schema, only text field is updatable.
+        
         Args:
             original: Original memory record
             updates: Updates from LLM
             
         Returns:
-            Updated memory record
+            Updated memory record (v2 schema)
         """
         # Start with a copy of original
         result = original.copy()
         
-        # Update text if provided
+        # Update text if provided (v2 schema: all info in text)
         if "text" in updates and updates["text"]:
             result["text"] = updates["text"]
         
-        # Update metadata fields that are allowed to change
-        if "metadata" in updates:
-            if "metadata" not in result:
-                result["metadata"] = {}
-            
-            update_meta = updates["metadata"]
-            
-            # Only update context and thing (text-related fields)
-            if "context" in update_meta and update_meta["context"]:
-                result["metadata"]["context"] = update_meta["context"]
-            if "thing" in update_meta and update_meta["thing"]:
-                result["metadata"]["thing"] = update_meta["thing"]
-            
-            # Preserve immutable fields from original
-            original_meta = original.get("metadata", {})
-            result["metadata"]["time"] = original_meta.get("time", "")
-            result["metadata"]["chatid"] = original_meta.get("chatid", "")
-            result["metadata"]["who"] = original_meta.get("who", "user")
+        # Preserve immutable fields
+        result["chat_id"] = original.get("chat_id", "")
         
         return result

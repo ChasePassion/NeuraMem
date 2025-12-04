@@ -201,13 +201,9 @@ class TestExplicitRememberRequest:
         assert len(result.records) >= 1, \
             f"Remember request should produce at least one record, got {len(result.records)}"
         
-        # Verify record structure
+        # Verify record structure (v2 schema: only text field)
         for record in result.records:
-            assert record.who, "Record should have 'who' field"
             assert record.text, "Record should have 'text' field"
-            assert "context" in record.metadata, "Record metadata should have 'context'"
-            assert "thing" in record.metadata, "Record metadata should have 'thing'"
-            assert "who" in record.metadata, "Record metadata should have 'who'"
 
     @settings(
         max_examples=3,

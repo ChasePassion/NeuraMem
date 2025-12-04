@@ -231,17 +231,14 @@ class TestMilvusStore:
         assert milvus_store._client.has_collection("test_unit_memories")
     
     def test_insert_returns_ids(self, milvus_store):
-        """Test that insert returns list of IDs."""
+        """Test that insert returns list of IDs (v2 schema)."""
         record = {
             "user_id": "test_user",
             "memory_type": "episodic",
             "ts": 1700000000,
             "chat_id": "chat_001",
-            "who": "user",
             "text": "Test memory",
             "vector": [0.1] * 2560,
-            "hit_count": 0,
-            "metadata": {"context": "test", "thing": "test", "time": "2024-01-01", "chatid": "chat_001", "who": "user"}
         }
         
         ids = milvus_store.insert([record])
@@ -253,17 +250,14 @@ class TestMilvusStore:
         milvus_store.delete(ids=ids)
     
     def test_query_returns_matching_records(self, milvus_store):
-        """Test that query returns records matching filter."""
+        """Test that query returns records matching filter (v2 schema)."""
         record = {
             "user_id": "query_test_user",
             "memory_type": "episodic",
             "ts": 1700000000,
             "chat_id": "chat_query",
-            "who": "user",
             "text": "Query test memory",
             "vector": [0.2] * 2560,
-            "hit_count": 5,
-            "metadata": {"context": "query test", "thing": "test", "time": "2024-01-01", "chatid": "chat_query", "who": "user"}
         }
         
         ids = milvus_store.insert([record])
@@ -272,7 +266,7 @@ class TestMilvusStore:
         # Query by ID
         results = milvus_store.query(
             filter_expr=f"id == {ids[0]}",
-            output_fields=["user_id", "text", "hit_count"]
+            output_fields=["user_id", "text"]
         )
         
         # Convert to list if needed
@@ -281,27 +275,26 @@ class TestMilvusStore:
         assert len(results_list) >= 1
         assert results_list[0]["user_id"] == "query_test_user"
         assert results_list[0]["text"] == "Query test memory"
-        assert results_list[0]["hit_count"] == 5
         
         # Cleanup
         milvus_store.delete(ids=ids)
     
     def test_delete_removes_records(self, milvus_store):
-        """Test that delete removes specified records."""
+        """Test that delete removes specified records (v2 schema)."""
+        import time
+        
         record = {
             "user_id": "delete_test_user",
             "memory_type": "episodic",
             "ts": 1700000000,
             "chat_id": "chat_delete",
-            "who": "user",
             "text": "Delete test memory",
             "vector": [0.3] * 2560,
-            "hit_count": 0,
-            "metadata": {"context": "delete test", "thing": "test", "time": "2024-01-01", "chatid": "chat_delete", "who": "user"}
         }
         
         ids = milvus_store.insert([record])
         milvus_store.flush()
+        time.sleep(0.5)  # Wait for data sync
         
         # Verify record exists before delete
         results_before = milvus_store.query(
@@ -316,6 +309,7 @@ class TestMilvusStore:
         assert deleted_count == 1
         
         milvus_store.flush()
+        time.sleep(0.5)  # Wait for data sync
         
         # Verify record is gone
         results_after = milvus_store.query(
@@ -326,7 +320,7 @@ class TestMilvusStore:
         assert len(results_after_list) == 0
     
     def test_search_returns_similar_vectors(self, milvus_store):
-        """Test that search returns records with similar vectors."""
+        """Test that search returns records with similar vectors (v2 schema)."""
         # Insert a record with known vector
         base_vector = [0.5] * 2560
         record = {
@@ -334,11 +328,8 @@ class TestMilvusStore:
             "memory_type": "episodic",
             "ts": 1700000000,
             "chat_id": "chat_search",
-            "who": "user",
             "text": "Search test memory",
             "vector": base_vector,
-            "hit_count": 0,
-            "metadata": {"context": "search test", "thing": "test", "time": "2024-01-01", "chatid": "chat_search", "who": "user"}
         }
         
         ids = milvus_store.insert([record])

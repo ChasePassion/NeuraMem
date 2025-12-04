@@ -22,23 +22,14 @@ def iso_time_strategy():
 
 
 def episodic_memory_strategy():
-    """Generate valid episodic memory records for testing."""
+    """Generate valid episodic memory records for testing (v2 schema)."""
     return st.fixed_dictionaries({
         "id": st.integers(min_value=1, max_value=1000000),
         "user_id": st.text(min_size=1, max_size=20, alphabet="abcdefghijklmnopqrstuvwxyz0123456789_"),
         "memory_type": st.just("episodic"),
         "ts": st.integers(min_value=1600000000, max_value=1800000000),
         "chat_id": st.text(min_size=1, max_size=30, alphabet="abcdefghijklmnopqrstuvwxyz0123456789-_"),
-        "who": st.sampled_from(["user", "assistant", "friend"]),
         "text": st.text(min_size=10, max_size=200),
-        "hit_count": st.integers(min_value=0, max_value=100),
-        "metadata": st.fixed_dictionaries({
-            "context": st.text(min_size=5, max_size=100),
-            "thing": st.text(min_size=5, max_size=100),
-            "time": iso_time_strategy(),
-            "chatid": st.text(min_size=1, max_size=30, alphabet="abcdefghijklmnopqrstuvwxyz0123456789-_"),
-            "who": st.sampled_from(["user", "assistant", "friend"])
-        })
     })
 
 
@@ -79,7 +70,9 @@ class TestSemanticMemoryFieldCompleteness:
     **Validates: Requirements 6.6**
     
     For any created semantic memory, the record SHALL have memory_type="semantic" 
-    and metadata containing fact, source_chatid, and first_seen fields.
+    and contain the fact in the text field.
+    
+    (v2 schema: simplified, no metadata field)
     """
 
     @settings(
@@ -100,11 +93,11 @@ class TestSemanticMemoryFieldCompleteness:
         **Validates: Requirements 6.6**
         
         For any created semantic memory, the record SHALL have memory_type="semantic" 
-        and metadata containing fact, source_chatid, and first_seen fields.
+        and contain the fact in the text field.
         """
         config = MemoryConfig()
         
-        # Create semantic memories directly (simulating _create_semantic_memories)
+        # Create semantic memories directly (simulating _create_semantic_memories, v2 schema)
         user_id = source_memory.get("user_id", "")
         source_chat_id = source_memory.get("chat_id", "")
         
@@ -113,20 +106,14 @@ class TestSemanticMemoryFieldCompleteness:
         
         for fact in facts:
             # Use dummy vector for testing (avoid real embedding API calls)
+            # v2 schema: no who, hit_count, or metadata fields
             entity = {
                 "user_id": user_id,
                 "memory_type": "semantic",
                 "ts": current_ts,
                 "chat_id": source_chat_id,
-                "who": source_memory.get("who", "user"),
                 "text": fact,
                 "vector": [0.1] * config.embedding_dim,
-                "hit_count": 0,
-                "metadata": {
-                    "fact": fact,
-                    "source_chatid": source_chat_id,
-                    "first_seen": datetime.now(timezone.utc).isoformat()
-                }
             }
             entities.append(entity)
         
@@ -153,30 +140,6 @@ class TestSemanticMemoryFieldCompleteness:
                 assert record.get("memory_type") == "semantic", \
                     f"memory_type should be 'semantic', got '{record.get('memory_type')}'"
                 
-                # Verify metadata exists
-                metadata = record.get("metadata", {})
-                assert metadata is not None, "metadata should not be None"
-                
-                # Verify fact field in metadata
-                assert "fact" in metadata, "metadata should contain 'fact' field"
-                assert metadata["fact"] == facts[i], \
-                    f"fact should match: expected '{facts[i]}', got '{metadata['fact']}'"
-                
-                # Verify source_chatid field in metadata
-                assert "source_chatid" in metadata, "metadata should contain 'source_chatid' field"
-                assert metadata["source_chatid"] == source_memory["chat_id"], \
-                    f"source_chatid should match source memory's chat_id"
-                
-                # Verify first_seen field in metadata
-                assert "first_seen" in metadata, "metadata should contain 'first_seen' field"
-                assert metadata["first_seen"], "first_seen should not be empty"
-                
-                # Verify first_seen is a valid ISO 8601 timestamp
-                try:
-                    datetime.fromisoformat(metadata["first_seen"].replace('Z', '+00:00'))
-                except ValueError:
-                    pytest.fail(f"first_seen should be valid ISO 8601: {metadata['first_seen']}")
-                
                 # Verify user_id matches source
                 assert record.get("user_id") == source_memory["user_id"], \
                     "user_id should match source memory"
@@ -184,6 +147,13 @@ class TestSemanticMemoryFieldCompleteness:
                 # Verify text field contains the fact
                 assert record.get("text") == facts[i], \
                     f"text should be the fact: expected '{facts[i]}'"
+                
+                # Verify chat_id is present
+                assert record.get("chat_id") == source_chat_id, \
+                    "chat_id should match source memory"
+                
+                # Verify ts is present
+                assert record.get("ts") > 0, "ts should be a positive timestamp"
                 
         finally:
             # Cleanup created records

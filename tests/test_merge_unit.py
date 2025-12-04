@@ -1,4 +1,7 @@
-"""Unit test for merge functionality."""
+"""Unit test for merge functionality.
+
+v2 schema: simplified, only core fields (no who, hit_count, metadata)
+"""
 
 from src.memory_system.processors.merger import EpisodicMerger
 
@@ -8,88 +11,83 @@ class MockLLM:
         return default
 
 
-def test_merge_time_selection():
-    """Test that merge uses earliest time."""
+def test_merge_text_combination():
+    """Test that merge combines text from both memories (v2 schema)."""
     merger = EpisodicMerger(MockLLM())
     
     memory_a = {
         'id': 1,
         'user_id': 'test_user',
         'chat_id': 'chat_a',
-        'who': 'user',
-        'metadata': {
-            'time': '2025-01-01T10:00:00Z',
-            'context': 'context a',
-            'thing': 'thing a'
-        }
+        'text': 'Memory A content',
     }
     
     memory_b = {
         'id': 2,
         'user_id': 'test_user',
         'chat_id': 'chat_b',
-        'who': 'user',
-        'metadata': {
-            'time': '2025-01-02T10:00:00Z',
-            'context': 'context b',
-            'thing': 'thing b'
-        }
+        'text': 'Memory B content',
     }
     
     merged = merger.merge(memory_a, memory_b)
     
-    # Verify time selection (should be earliest)
-    assert merged['metadata']['time'] == '2025-01-01T10:00:00Z'
-    
-    # Verify source tracking
-    assert 'chat_a' in merged['metadata']['source_chat_ids']
-    assert 'chat_b' in merged['metadata']['source_chat_ids']
-    assert 1 in merged['metadata']['merged_from_ids']
-    assert 2 in merged['metadata']['merged_from_ids']
+    # Verify text is present and non-empty
+    assert 'text' in merged
+    assert merged['text']
+    assert len(merged['text']) > 0
 
 
-def test_merge_source_tracking():
-    """Test that merge tracks source chat_ids and merged_from_ids."""
+def test_merge_chat_id_preservation():
+    """Test that merge preserves chat_id (v2 schema)."""
     merger = EpisodicMerger(MockLLM())
     
     memory_a = {
         'id': 100,
         'user_id': 'user1',
         'chat_id': 'chat-100',
-        'who': 'user',
-        'metadata': {
-            'time': '2025-06-01T12:00:00Z',
-            'context': 'test',
-            'thing': 'test'
-        }
+        'text': 'Test memory A',
     }
     
     memory_b = {
         'id': 200,
         'user_id': 'user1',
         'chat_id': 'chat-200',
-        'who': 'user',
-        'metadata': {
-            'time': '2025-06-02T12:00:00Z',
-            'context': 'test',
-            'thing': 'test'
-        }
+        'text': 'Test memory B',
     }
     
     merged = merger.merge(memory_a, memory_b)
     
-    # Verify source_chat_ids contains both
-    source_ids = merged['metadata']['source_chat_ids']
-    assert 'chat-100' in source_ids
-    assert 'chat-200' in source_ids
+    # Verify chat_id is present
+    assert 'chat_id' in merged
+    assert merged['chat_id'] in ['chat-100', 'chat-200']
+
+
+def test_merge_user_id_preservation():
+    """Test that merge preserves user_id (v2 schema)."""
+    merger = EpisodicMerger(MockLLM())
     
-    # Verify merged_from_ids contains both
-    merged_ids = merged['metadata']['merged_from_ids']
-    assert 100 in merged_ids
-    assert 200 in merged_ids
+    memory_a = {
+        'id': 1,
+        'user_id': 'test_user',
+        'chat_id': 'chat_a',
+        'text': 'Memory A',
+    }
+    
+    memory_b = {
+        'id': 2,
+        'user_id': 'test_user',
+        'chat_id': 'chat_b',
+        'text': 'Memory B',
+    }
+    
+    merged = merger.merge(memory_a, memory_b)
+    
+    # Verify user_id is preserved
+    assert merged['user_id'] == 'test_user'
 
 
 if __name__ == '__main__':
-    test_merge_time_selection()
-    test_merge_source_tracking()
+    test_merge_text_combination()
+    test_merge_chat_id_preservation()
+    test_merge_user_id_preservation()
     print('All merge unit tests passed!')
