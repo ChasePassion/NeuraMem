@@ -100,43 +100,6 @@ You SHOULD extract semantic facts from this episodic memory in the following sit
      or a purely short-term plan.
 
 ----------------------------------------------------------------------
-What MUST NOT be promoted to semantic memory
-----------------------------------------------------------------------
-
-You MUST NOT extract semantic facts from the following kinds of content:
-
-1. Temporary states or short-lived emotions
-   - Examples:
-     - "I’m very sleepy today."
-     - "I’ve been feeling a bit down these last two days."
-   - These are short-term and should stay only in episodic memory at most.
-
-2. Clearly short-term or unstable plans / flags
-   - Examples:
-     - "This week I will wake up at 5 a.m. every day."
-     - "I plan to pull an all-nighter tonight to finish my homework."
-   - These are short-term intentions and should NOT be stored as semantic facts.
-
-3. Conversation / answer style preferences and configuration
-   - Examples:
-     - "From now on, reply to me in Chinese."
-     - "When you explain English words, always include phonetic transcriptions."
-   - Such preferences should be handled by an upstream configuration system, 
-     NOT by semantic memory. Do NOT turn them into semantic facts.
-
-4. Highly uncertain guesses or speculations
-   - Examples:
-     - "Maybe I’ll study finance someday."
-     - "I might go abroad for a PhD, not sure yet."
-   - If the user is clearly unsure or just daydreaming, do not promote it to semantic memory.
-
-5. Facts mainly about other people, unless they define the user in a stable way
-   - In general, focus on facts that describe the user themself.
-   - Ignore details about other people unless the relationship itself is stable and
-     clearly important for the user’s profile (e.g., "The user’s advisor is Professor X" 
-     if this really matters and is described as stable).
-
-----------------------------------------------------------------------
 Output format
 ----------------------------------------------------------------------
 
@@ -165,12 +128,6 @@ Example format:
     "The user currently lives and studies in Finland."
   ]
 }
-
-Language requirements:
-- Use the SAME language as the original episodic memory’s `text` / `metadata.thing`.
-  - If the memory is in Chinese, output facts in Chinese.
-  - If the memory is in English, output facts in English.
-  - Do NOT translate across languages.
 
 ----------------------------------------------------------------------
 Important constraints
@@ -320,21 +277,6 @@ When merging, follow these rules:
      - "last_updated_desc": a brief sentence like
        "Merged two episodic records describing the same hiking plan into one consolidated memory."
 
-7. Language
-   - Use the SAME language as the original memories (`text` / `metadata.thing`).
-     - If A/B are in Chinese, write the merged `context`, `thing`, and `text` in Chinese.
-     - If A/B are in English, write them in English.
-   - Do NOT translate across languages.
-
-----------------------------------------------------------------------
-Fields you SHOULD NOT manage
-----------------------------------------------------------------------
-
-- You do NOT need to set `ts` or `vector`. These will be set by upstream.
-- You MUST NOT invent new IDs. Use A.id and B.id only inside `merged_from_ids`.
-- For `user_id`, you MAY copy A.user_id (A and B should share the same user_id),
-  but upstream can also fill it; do not create a new or different user_id.
-
 ----------------------------------------------------------------------
 Output format
 ----------------------------------------------------------------------
@@ -462,48 +404,10 @@ For EACH of the two memories (A and B), you MUST:
    - The goal is that, when we embed these two `text` values,
      the vectors become more separated and better aligned with their true episodes.
 
-----------------------------------------------------------------------
-Fields you MUST NOT change
-----------------------------------------------------------------------
-
-For BOTH A and B:
-
-- You MUST NOT change the meaning or value of the following fields:
-  - `id`
-  - `user_id`
-  - `memory_type`
-  - `ts`
-  - `chat_id`
-  - `metadata.time`
-  - `metadata.chatid`
-  - `who`
-  - `metadata.who`
-
-In your output, you will NOT touch these fields directly:
-- Upstream will keep their original values based on the record IDs.
-- When you copy `time`, `chatid`, and `who` into the output metadata,
-  you MUST keep them EXACTLY as in the input.
-
-You are allowed to modify ONLY:
-- `metadata.context`
-- `metadata.thing`
-- `text`
-
-You MUST NOT:
-
-- Invent new events, locations, people, or outcomes that are not supported by A or B.
-- Change the truth value of any explicit fact (e.g., whether something happened, whether
-  a plan was completed) that is clearly stated in the original records.
-
-----------------------------------------------------------------------
-Language requirements
-----------------------------------------------------------------------
-
-- Use the SAME language as the original memories.
-  - If A and B are described in Chinese, write the new `context`, `thing`, and `text` in Chinese.
-  - If they are described in English, write in English.
-- If A and B use the same language, keep using that language.
-- Do NOT translate between languages.
+4.You are allowed to modify ONLY:
+  - `metadata.context`
+  - `metadata.thing`
+  - `text`
 
 ----------------------------------------------------------------------
 Output format
@@ -639,38 +543,6 @@ You will receive a JSON object like:
 You MUST base your work ONLY on `old_memory` and `current_context`.
 
 ----------------------------------------------------------------------
-What you MUST NOT change
-----------------------------------------------------------------------
-
-You MUST NOT change the meaning of the following fields:
-
-- `chat_id`
-- `who`
-- `metadata.time` (this represents when the event FIRST started)
-- `metadata.chatid`
-- `metadata.who`
-
-You do NOT output `id`, `user_id`, `ts`, or `memory_type`; those are handled upstream.
-
-If new time points (e.g., plan changes, new stages, completions) need to be recorded,
-you MUST NOT overwrite `metadata.time`. Instead, you MUST use or create a `metadata.updates`
-array to capture them.
-
-Example of an `updates` entry:
-
-{
-  "time": "<ISO 8601 time for the new update, if provided by upstream or in the text>",
-  "desc": "In this conversation, the user changed the plan from A to B."
-}
-
-If `old_memory.metadata.updates` already exists:
-- You MUST preserve all existing entries.
-- You MAY append new entries at the end for the new changes.
-
-If it does not exist:
-- You MAY create `updates` as a new array when there is at least one meaningful update.
-
-----------------------------------------------------------------------
 Your tasks
 ----------------------------------------------------------------------
 
@@ -736,16 +608,6 @@ Your tasks
      you MUST:
      - keep a mention that X was previously stated,
      - and clearly state that it has been corrected to Y in the updated narrative.
-
-----------------------------------------------------------------------
-Language requirements
-----------------------------------------------------------------------
-
-- Use the SAME language as `old_memory.text` / `old_memory.metadata.thing`.
-  - If the original memory is in Chinese, write `context`, `thing`, `text`, and `updates.desc`
-    in Chinese.
-  - If it is in English, write in English.
-- Do NOT translate between languages.
 
 ----------------------------------------------------------------------
 Output format
@@ -860,32 +722,6 @@ Under the "tend to store" principle, you SHOULD write an episodic memory when th
    - As long as the content is about the user’s life, plans, or context (not just style preferences).
 
 ----------------------------------------------------------------------
-What should NOT be stored as episodic memory
-----------------------------------------------------------------------
-
-You SHOULD NOT write an episodic memory when the snippet is:
-
-1. Pure chitchat
-   - Examples:
-     - “Hi”, “Hello”, “Are you there”.
-     - Simple greetings without any self-related information.
-
-2. Pure objective knowledge questions unrelated to the user
-   - Examples:
-     - “What is the GDP of the United States?”
-     - “How is a hash table implemented?”
-     - Generic coding/knowledge questions where the user does not reveal anything about themselves.
-
-3. Obviously meaningless or extremely short content
-   - Examples:
-     - “嗯”, “啊”, “哈哈”, random noises or single tokens.
-     - Pure reaction emojis or interjections without any self-related content.
-
-If a snippet mixes general knowledge with self-related information (for example,
-“I’m a CS student and I want to know how hash tables work”), you SHOULD store the
-self-related part as an episodic memory.
-
-----------------------------------------------------------------------
 Input format
 ----------------------------------------------------------------------
 
@@ -957,39 +793,6 @@ If you decide to write, you MUST output:
     ...
   ]
 }
-
-Guidelines:
-
-1. `who`
-   - Normally "user".
-   - Only change if it is explicitly clear that the memory is about another subject
-     (e.g., the user is describing someone else in a way that should be stored).
-
-2. `metadata.context`
-   - Briefly describe the background or situation of this snippet:
-     - Where/how the conversation is happening (if mentioned).
-     - What general topic or task the user is dealing with.
-   - Keep it short and to the point.
-
-3. `metadata.thing`
-   - Clearly describe the specific event, plan, reflection, or self-related information.
-   - Focus on:
-     - What the user decided, did, is doing, or plans to do.
-     - How they describe themselves, their situation, or their problems.
-   - Use chronological order if the snippet implies a mini-sequence (e.g., old plan → new plan).
-
-4. `text`
-   - Usually a clean, fluent combination of `context` + `thing` in one or two sentences.
-   - This is the main field used for vector search, so it should:
-     - Be easy to understand,
-     - Contain the most important information,
-     - Avoid unnecessary fluff.
-
-5. Language
-   - Use the SAME language as the user’s messages in the snippet.
-     - If the user speaks Chinese, output `text`, `context`, and `thing` in Chinese.
-     - If the user speaks English, output them in English.
-   - Do NOT translate across languages.
 
 ----------------------------------------------------------------------
 Output format
