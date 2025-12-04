@@ -14,8 +14,6 @@ from .clients import EmbeddingClient, LLMClient, MilvusStore
 from .processors import (
     EpisodicWriteDecider,
     SemanticWriter,
-    EpisodicMerger,
-    EpisodicSeparator,
     EpisodicReconsolidator,
 )
 
@@ -48,8 +46,6 @@ class MemoryRecord:
 class ConsolidationStats:
     """Statistics from a consolidation run."""
     memories_processed: int = 0
-    memories_merged: int = 0
-    memories_separated: int = 0
     semantic_created: int = 0
 
 
@@ -79,8 +75,6 @@ class Memory:
         # Initialize processor modules
         self._write_decider = EpisodicWriteDecider(self._llm_client)
         self._semantic_writer = SemanticWriter(self._llm_client)
-        self._merger = EpisodicMerger(self._llm_client)
-        self._separator = EpisodicSeparator(self._llm_client)
         self._reconsolidator = EpisodicReconsolidator(self._llm_client)
         
         # Create collection if not exists
@@ -448,115 +442,12 @@ class Memory:
         
         return count
     
-    def find_similar_candidates(
-        self,
-        memory: Dict[str, Any],
-        top_n: int = 10,
-        exclude_ids: Optional[set] = None
-    ) -> List[Dict[str, Any]]:
-        """Find Top-N similar episodic memory candidates for consolidation.
-        
-        Performs vector similarity search and calculates cosine similarity scores.
-        
-        Args:
-            memory: Source memory to find similar candidates for
-            top_n: Maximum number of candidates to return
-            exclude_ids: Set of memory IDs to exclude from results
-            
-        Returns:
-            List of candidate memories with similarity scores added
-            
-        Requirements: 5.1
-        """
-        vector = memory.get("vector")
-        if not vector:
-            return []
-        
-        memory_id = memory.get("id")
-        user_id = memory.get("user_id", "")
-        
-        # Build filter to exclude self and already processed memories
-        filter_parts = [
-            f'user_id == "{user_id}"',
-            'memory_type == "episodic"'
-        ]
-        if memory_id is not None:
-            filter_parts.append(f'id != {memory_id}')
-        
-        filter_expr = " and ".join(filter_parts)
-        
-        # Search for similar candidates
-        results = self._store.search(
-            vectors=[vector],
-            filter_expr=filter_expr,
-            limit=top_n
-        )
-        
-        if not results or not results[0]:
-            return []
-        
-        # Process results and add similarity scores
-        candidates = []
-        for hit in results[0]:
-            candidate_id = hit.get("id")
-            
-            # Skip excluded IDs
-            if exclude_ids and candidate_id in exclude_ids:
-                continue
-            
-            # Calculate cosine similarity from distance
-            # Milvus COSINE metric returns distance = 1 - similarity
-            distance = hit.get("distance", 1.0)
-            similarity = 1.0 - distance
-            
-            # Add similarity to candidate
-            hit["similarity"] = similarity
-            candidates.append(hit)
-        
-        return candidates
-    
-    def categorize_by_similarity(
-        self,
-        candidates: List[Dict[str, Any]]
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """Categorize candidates by similarity thresholds.
-        
-        Categories:
-        - 'merge': similarity >= T_merge_high (0.85)
-        - 'separate': T_amb_low (0.65) <= similarity < T_merge_high (0.85)
-        - 'distinct': similarity < T_amb_low (0.65)
-        
-        Args:
-            candidates: List of candidates with similarity scores
-            
-        Returns:
-            Dict with 'merge', 'separate', 'distinct' lists
-        """
-        result = {
-            'merge': [],
-            'separate': [],
-            'distinct': []
-        }
-        
-        for candidate in candidates:
-            similarity = candidate.get("similarity", 0.0)
-            
-            if similarity >= self._config.t_merge_high:
-                result['merge'].append(candidate)
-            elif similarity >= self._config.t_amb_low:
-                result['separate'].append(candidate)
-            else:
-                result['distinct'].append(candidate)
-        
-        return result
+
 
     def consolidate(self, user_id: Optional[str] = None) -> ConsolidationStats:
         """Run consolidation process for memories.
         
-        Performs:
-        - Merge highly similar episodic memories (similarity >= 0.85)
-        - Separate ambiguously similar memories (0.65 <= similarity < 0.85)
-        - Extract semantic facts from episodic memories
+        Performs semantic fact extraction from episodic memories.
         
         Args:
             user_id: Optional user to consolidate. If None, consolidates all.
@@ -564,7 +455,7 @@ class Memory:
         Returns:
             ConsolidationStats with operation counts
             
-        Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 6.1, 6.6
+        Requirements: 6.1, 6.6
         """
         stats = ConsolidationStats()
         
@@ -582,226 +473,23 @@ class Memory:
             f"processing {len(memories)} episodic memories"
         )
         
-        # Track processed memory IDs to avoid double-processing
-        processed_ids = set()
-        # Track separated pairs to avoid re-separating
-        separated_pairs = set()
-        
-        # Phase 1: Merge and Separation
+        # Semantic extraction from episodic memories
         for memory in memories:
-            memory_id = memory.get("id")
-            if memory_id in processed_ids:
-                continue
-            
-            # Find similar candidates using dedicated method
-            candidates = self.find_similar_candidates(
-                memory=memory,
-                top_n=10,
-                exclude_ids=processed_ids
-            )
-            
-            if not candidates:
-                continue
-            
-            # Categorize candidates by similarity thresholds
-            categorized = self.categorize_by_similarity(candidates)
-            
-            # Process merge candidates (similarity >= T_merge_high)
-            for candidate in categorized['merge']:
-                candidate_id = candidate.get("id")
-                if candidate_id in processed_ids:
-                    continue
-                
-                # Check merge constraints (who, time, chat_id)
-                if self._can_merge(memory, candidate):
-                    merged_id = self._perform_merge(memory, candidate)
-                    if merged_id is not None:
-                        processed_ids.add(memory_id)
-                        processed_ids.add(candidate_id)
-                        stats.memories_merged += 1
-                        break  # Memory was merged, move to next
-            
-            # If memory was merged, skip separation
-            if memory_id in processed_ids:
-                continue
-            
-            # Process separation candidates (T_amb_low <= similarity < T_merge_high)
-            for candidate in categorized['separate']:
-                candidate_id = candidate.get("id")
-                if candidate_id in processed_ids:
-                    continue
-                
-                # Create pair key to avoid re-separating
-                pair_key = tuple(sorted([memory_id, candidate_id]))
-                if pair_key in separated_pairs:
-                    continue
-                
-                self._perform_separation(memory, candidate)
-                separated_pairs.add(pair_key)
-                stats.memories_separated += 1
-        
-        # Phase 2: Semantic extraction for non-merged memories
-        # Re-query to get updated memories after merge/separation
-        memories = self._store.query(filter_expr=filter_expr, limit=1000)
-        
-        for memory in memories:
-            memory_id = memory.get("id")
-            
             # Extract semantic facts
             extraction = self._semantic_writer.extract(memory)
             if extraction.write_semantic and extraction.facts:
                 self._create_semantic_memories(memory, extraction.facts)
                 stats.semantic_created += len(extraction.facts)
         
-        # Log detailed consolidation statistics (Requirements 10.5)
+        # Log consolidation statistics
         logger.info(
             f"Consolidation complete for user_id={user_id or 'all'}: "
-            f"processed={stats.memories_processed}, merged={stats.memories_merged}, "
-            f"separated={stats.memories_separated}, semantic_created={stats.semantic_created}"
+            f"processed={stats.memories_processed}, semantic_created={stats.semantic_created}"
         )
         
         return stats
 
-    def check_merge_constraints(
-        self,
-        memory_a: Dict[str, Any],
-        memory_b: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Check merge constraints between two memories.
-        
-        Validates (v2 schema - simplified):
-        - Time constraints based on chat_id (Requirements 9.1, 9.2)
-        
-        Args:
-            memory_a: First memory record
-            memory_b: Second memory record
-            
-        Returns:
-            Dict with:
-                - can_merge: bool indicating if merge is allowed
-                - reason: str explaining why merge is/isn't allowed
-                - same_chat: bool indicating if chat_ids match
-                - time_diff: int time difference in seconds
-                - time_constraint: int applicable time window in seconds
-        """
-        result = {
-            "can_merge": True,
-            "reason": "All constraints satisfied",
-            "same_chat": False,
-            "time_diff": 0,
-            "time_constraint": 0
-        }
-        
-        # Check time constraints
-        ts_a = memory_a.get("ts", 0)
-        ts_b = memory_b.get("ts", 0)
-        time_diff = abs(ts_a - ts_b)
-        result["time_diff"] = time_diff
-        
-        chat_a = memory_a.get("chat_id", "")
-        chat_b = memory_b.get("chat_id", "")
-        result["same_chat"] = (chat_a == chat_b)
-        
-        if result["same_chat"]:
-            # Same chat: 30 minute window (Requirement 9.1)
-            result["time_constraint"] = self._config.merge_time_window_same_chat
-            if time_diff > self._config.merge_time_window_same_chat:
-                result["can_merge"] = False
-                result["reason"] = (
-                    f"Same chat time constraint violated: "
-                    f"{time_diff}s > {self._config.merge_time_window_same_chat}s (30 min)"
-                )
-        else:
-            # Different chats: 7 day window (Requirement 9.2)
-            result["time_constraint"] = self._config.merge_time_window_diff_chat
-            if time_diff > self._config.merge_time_window_diff_chat:
-                result["can_merge"] = False
-                result["reason"] = (
-                    f"Different chat time constraint violated: "
-                    f"{time_diff}s > {self._config.merge_time_window_diff_chat}s (7 days)"
-                )
-        
-        return result
-    
-    def _can_merge(self, memory_a: Dict[str, Any], memory_b: Dict[str, Any]) -> bool:
-        """Check if two memories can be merged based on constraints.
-        
-        This is a convenience wrapper around check_merge_constraints().
-        
-        Requirements: 9.1, 9.2
-        """
-        result = self.check_merge_constraints(memory_a, memory_b)
-        return result["can_merge"]
-    
-    def _perform_merge(
-        self,
-        memory_a: Dict[str, Any],
-        memory_b: Dict[str, Any]
-    ) -> Optional[int]:
-        """Merge two memories into one.
-        
-        In v2 schema, all information is stored in the text field.
-        
-        Requirements: 5.2, 5.4, 9.4, 9.5
-        """
-        # Call merger to create merged content
-        merged = self._merger.merge(memory_a, memory_b)
-        
-        if not merged:
-            return None
-        
-        # Generate embedding for merged text
-        embeddings = self._embedding_client.encode([merged.get("text", "")])
-        if not embeddings:
-            return None
-        
-        # Build v2 schema record
-        merged_record = {
-            "user_id": memory_a.get("user_id", ""),
-            "memory_type": "episodic",
-            "ts": min(memory_a.get("ts", 0), memory_b.get("ts", 0)),
-            "chat_id": memory_a.get("chat_id", ""),
-            "text": merged.get("text", ""),
-            "vector": embeddings[0],
-        }
-        
-        # Delete original records
-        self._store.delete(ids=[memory_a.get("id"), memory_b.get("id")])
-        
-        # Insert merged record
-        ids = self._store.insert([merged_record])
-        
-        return ids[0] if ids else None
-    
-    def _perform_separation(
-        self,
-        memory_a: Dict[str, Any],
-        memory_b: Dict[str, Any]
-    ) -> None:
-        """Separate two similar memories to make them more distinct.
-        
-        Requirements: 5.3, 5.5
-        """
-        # Call separator to rewrite memories
-        separated = self._separator.separate(memory_a, memory_b)
-        
-        if not separated:
-            return
-        
-        updated_a, updated_b = separated
-        
-        # Regenerate embeddings
-        texts = [updated_a.get("text", ""), updated_b.get("text", "")]
-        embeddings = self._embedding_client.encode(texts)
-        
-        if len(embeddings) >= 2:
-            # Update memory A
-            updated_a["vector"] = embeddings[0]
-            self._store.update(memory_a.get("id"), updated_a)
-            
-            # Update memory B
-            updated_b["vector"] = embeddings[1]
-            self._store.update(memory_b.get("id"), updated_b)
+
     
     def _create_semantic_memories(
         self,

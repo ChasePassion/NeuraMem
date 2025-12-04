@@ -2,8 +2,6 @@
 
 from .write_decider import EpisodicWriteDecider, WriteDecision, MemoryRecord
 from .semantic_writer import SemanticWriter, SemanticExtraction
-from .merger import EpisodicMerger
-from .separator import EpisodicSeparator
 from .reconsolidator import EpisodicReconsolidator
 
 __all__ = [
@@ -14,10 +12,6 @@ __all__ = [
     # Semantic Writer
     "SemanticWriter",
     "SemanticExtraction",
-    # Merger
-    "EpisodicMerger",
-    # Separator
-    "EpisodicSeparator",
     # Reconsolidator
     "EpisodicReconsolidator",
 ]

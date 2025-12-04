@@ -202,8 +202,6 @@ class MemoryDemoApp:
             log.append(f"✅ 巩固完成 - {datetime.now().strftime('%H:%M:%S')}")
             log.append(f"📊 处理统计:")
             log.append(f"  - 处理记忆数: {stats.memories_processed}")
-            log.append(f"  - 合并记忆数: {stats.memories_merged}")
-            log.append(f"  - 分离记忆数: {stats.memories_separated}")
             log.append(f"  - 创建语义数: {stats.semantic_created}")
             
             self.consolidation_log.extend(log)

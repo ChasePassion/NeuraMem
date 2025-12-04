@@ -18,10 +18,6 @@ class MemoryConfig:
         collection_name: Name of the Milvus collection for memories
         k_semantic: Maximum number of semantic memories to retrieve
         k_episodic: Maximum number of episodic memories to retrieve
-        t_merge_high: Upper threshold for memory merge (cosine similarity >= 0.85)
-        t_amb_low: Lower threshold for ambiguous similarity (0.65)
-        merge_time_window_same_chat: Time window for merging same chat memories (30 min in seconds)
-        merge_time_window_diff_chat: Time window for merging different chat memories (7 days in seconds)
     """
     
     # Milvus configuration
@@ -52,10 +48,9 @@ class MemoryConfig:
     k_semantic: int = 5
     k_episodic: int = 5
     
-    # Consolidation thresholds
-    t_merge_high: float = 0.85
-    t_amb_low: float = 0.65
-    
-    # Time constraints (in seconds)
-    merge_time_window_same_chat: int = 1800  # 30 minutes
-    merge_time_window_diff_chat: int = 604800  # 7 days
+    # Note: Merge/separate functionality has been removed.
+    # The following fields are no longer used:
+    # - t_merge_high (merge threshold)
+    # - t_amb_low (ambiguous similarity threshold)
+    # - merge_time_window_same_chat (time window for same chat merge)
+    # - merge_time_window_diff_chat (time window for different chat merge)
