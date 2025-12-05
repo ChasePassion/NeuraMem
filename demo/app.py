@@ -91,13 +91,13 @@ class MemoryDemoApp:
                     ts = mem.get("ts", 0)
                     time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "N/A"
                     hit = mem.get("hit_count", 0)
-                    text = mem.get("text", "")[:80]
+                    text = mem.get("text", "")
                     metadata = mem.get("metadata", {})
-                    context = metadata.get("context", "")[:30]
-                    output.append(f"[ID:{mem.get('id')}] 🕐{time_str} 💫{hit}次")
-                    output.append(f"  📝 {text}...")
+                    context = metadata.get("context", "")
+                    output.append(f"[ID:{mem.get('id')}] 时间:{time_str}")
+                    output.append(f"  内容: {text}")
                     if context:
-                        output.append(f"  📍 {context}")
+                        output.append(f"  上下文: {context}")
                     output.append("")
             else:
                 output.append("  (暂无情景记忆)")
@@ -112,9 +112,9 @@ class MemoryDemoApp:
                     time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "N/A"
                     hit = mem.get("hit_count", 0)
                     metadata = mem.get("metadata", {})
-                    fact = metadata.get("fact", mem.get("text", ""))[:80]
-                    output.append(f"[ID:{mem.get('id')}] 🕐{time_str} 💫{hit}次")
-                    output.append(f"  💡 {fact}")
+                    fact = metadata.get("fact", mem.get("text", ""))
+                    output.append(f"[ID:{mem.get('id')}] 时间:{time_str}")
+                    output.append(f"  内容: {fact}")
                     output.append("")
             else:
                 output.append("  (暂无语义记忆)")
@@ -399,7 +399,7 @@ def create_demo_interface():
             # Right panel - Chat interface
             with gr.Column(scale=1):
                 gr.Markdown("## 💬 对话测试")
-                chatbot = gr.Chatbot(label="对话历史", height=400)
+                chatbot = gr.Chatbot(label="对话历史", height=400, type='messages')
                 msg_input = gr.Textbox(label="输入消息", placeholder="输入要记忆的内容...")
                 send_btn = gr.Button("发送", variant="primary")
                 
@@ -450,4 +450,4 @@ def create_demo_interface():
 
 if __name__ == "__main__":
     demo = create_demo_interface()
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
+    demo.launch(server_name="0.0.0.0", server_port=7861, share=False)
