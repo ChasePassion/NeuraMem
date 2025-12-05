@@ -202,49 +202,56 @@ class MilvusStore:
         
         return results
     
-    def update(self, id: int, data: Dict[str, Any]) -> bool:
+    def update(self, id: int, data: Dict[str, Any], base_record: Optional[Dict[str, Any]] = None) -> bool:
         """Update a memory record.
         
         Args:
             id: Record ID to update
             data: Fields to update
+            base_record: Optional record payload already fetched (avoids a second query)
             
         Returns:
             True if update succeeded
         """
-        # Milvus uses upsert for updates - need to fetch existing record first
-        existing = self._client.query(
-            collection_name=self._collection_name,
-            filter=f"id == {id}",
-            output_fields=["*"]
-        )
+        try:
+            record = None
+            
+            # Prefer caller-provided base record (e.g., from search hit)
+            if base_record:
+                record = base_record.copy()
+            else:
+                # Fetch current record to preserve required fields
+                existing = self._client.query(
+                    collection_name=self._collection_name,
+                    filter=f"id in [{int(id)}]",
+                    output_fields=["*"]
+                )
+                if existing:
+                    record = existing[0].copy()
+            
+            if record is None:
+                logger.warning(f"Record {id} not found for update")
+                return False
+            
+            # Merge fields and keep the same primary key
+            record.update(data)
+            record["id"] = id
+            
+            # Upsert keeps the primary key stable and avoids delete/reinsert races
+            self._client.upsert(
+                collection_name=self._collection_name,
+                data=[record]
+            )
+            
+            # Make the change immediately visible
+            self._client.flush(collection_name=self._collection_name)
+            
+            logger.info(f"Updated record {id}")
+            return True
         
-        if not existing:
-            logger.warning(f"Record {id} not found for update")
+        except Exception as e:
+            logger.warning(f"Failed to update record {id}: {e}")
             return False
-        
-        # Merge existing with new data
-        record = existing[0].copy()
-        record.update(data)
-        
-        # Delete and re-insert (Milvus doesn't support in-place update)
-        self._client.delete(
-            collection_name=self._collection_name,
-            filter=f"id == {id}"
-        )
-        
-        # Remove id for re-insert (auto_id will generate new one)
-        # The id field is auto-generated, so we must remove it
-        if "id" in record:
-            del record["id"]
-        
-        self._client.insert(
-            collection_name=self._collection_name,
-            data=[record]
-        )
-        
-        logger.info(f"Updated record {id}")
-        return True
     
     def delete(
         self,

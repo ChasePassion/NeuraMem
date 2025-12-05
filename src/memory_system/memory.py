@@ -364,7 +364,7 @@ class Memory:
                 
                 # Apply updates to Milvus if there are changes
                 if update_data:
-                    self._store.update(memory_id, update_data)
+                    self._store.update(memory_id, update_data, base_record=hit)
                     logger.debug(
                         f"Reconsolidated memory {memory_id} with context"
                     )
