@@ -181,6 +181,76 @@ class MemoryDemoApp:
                 {"role": "assistant", "content": error_msg}
             ], await asyncio.to_thread(self.get_all_memories)
     
+    async def chat_stream(self, message: str, history: List[Any]):
+        """Process chat message with streaming response and intelligent reconsolidation."""
+        history_messages = self._normalize_history(history)
+        
+        if not self.memory:
+            error_response = "⚠️ 请先初始化记忆系统"
+            new_history = history_messages + [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": error_response}
+            ]
+            yield new_history, await asyncio.to_thread(self.get_all_memories)
+            return
+        
+        if not message.strip():
+            yield history_messages, await asyncio.to_thread(self.get_all_memories)
+            return
+        
+        try:
+            # 1. 准备消息和上下文
+            prepared_messages = self._prepare_messages(message, history_messages)
+            
+            # 2. 检索相关记忆（禁用同步重巩固，避免阻塞）
+            relevant_memories = await asyncio.to_thread(
+                self.memory.search,
+                message,
+                self.current_user_id,
+                5,
+                False  # reconsolidate off here; we handle intelligently later
+            )
+            
+            # 3. 构建完整上下文（传入 history）
+            full_context = self._build_context_with_memories(message, relevant_memories, history_messages)
+            
+            # 4. 创建用于收集完整回复的队列
+            response_queue = asyncio.Queue()
+            
+            # 5. 启动流式响应生成
+            accumulated_response = ""
+            new_history = history_messages + [{"role": "user", "content": message}]
+            
+            # 先添加用户消息到历史
+            yield new_history, await asyncio.to_thread(self.get_all_memories)
+            
+            # 流式生成回复
+            async for chunk in self._generate_response_stream(full_context, prepared_messages):
+                accumulated_response += chunk
+                current_history = new_history + [{"role": "assistant", "content": accumulated_response}]
+                yield current_history, await asyncio.to_thread(self.get_all_memories)
+            
+            # 6. 将完整回复放入队列供记忆处理使用
+            await response_queue.put(accumulated_response)
+            
+            # 7. 启动智能巩固与写入任务（在后台异步执行）
+            asyncio.create_task(self._intelligent_reconsolidate_async_with_queue(
+                message, 
+                relevant_memories, 
+                full_context, 
+                response_queue, 
+                history_messages
+            ))
+            asyncio.create_task(self._add_to_memory_async(message, history_messages))
+            
+        except Exception as e:
+            error_msg = f"❌ 处理失败: {str(e)}"
+            error_history = history_messages + [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": error_msg}
+            ]
+            yield error_history, await asyncio.to_thread(self.get_all_memories)
+    
     def _normalize_history(self, history: List[Any]) -> List[Dict[str, str]]:
         """Normalize Chatbot history to the messages format Gradio expects."""
         normalized: List[Dict[str, str]] = []
@@ -306,6 +376,36 @@ Maintain a friendly and natural conversation style.
         except Exception as llm_error:
             return f"抱歉，我暂时无法生成回复。错误: {str(llm_error)}"
     
+    async def _generate_response_stream(self, context: str, messages: List[Dict]):
+        """使用LLM流式生成回复。"""
+        # 导入 MEMORY_ANSWER_PROMPT
+        try:
+            from prompts import MEMORY_ANSWER_PROMPT
+            system_prompt = f"{MEMORY_ANSWER_PROMPT}\n\nUser ID: {self.current_user_id}\n\n{context}"
+        except ImportError:
+            system_prompt = f"""You are an AI assistant with long-term memory capabilities. User ID: {self.current_user_id}
+Please answer based on the user's messages and relevant memories. If there are relevant memories, reflect that you remember the user's information in your response.
+Maintain a friendly and natural conversation style.
+
+{context}"""
+        
+        try:
+            # 获取最后一条用户消息
+            user_message = messages[-1]["content"] if messages else ""
+            
+            # 在线程池中执行流式调用
+            response_stream = await asyncio.to_thread(
+                self.memory._llm_client.chat_stream, system_prompt, user_message
+            )
+            
+            accumulated_response = ""
+            for chunk in response_stream:
+                accumulated_response += chunk
+                yield chunk
+                
+        except Exception as llm_error:
+            yield f"抱歉，我暂时无法生成回复。错误: {str(llm_error)}"
+    
     async def _add_to_memory_async(self, message: str, history: List[Dict[str, str]]) -> None:
         """异步添加记忆到后台（不阻塞 Gradio 事件循环）。"""
         try:
@@ -381,6 +481,43 @@ Maintain a friendly and natural conversation style.
             )
         except Exception as e:
             logger.warning(f"Intelligent reconsolidation failed: {e}")
+    
+    async def _intelligent_reconsolidate_async_with_queue(
+        self,
+        query: str,
+        retrieved_memories: List[MemoryRecord],
+        full_context: str,
+        response_queue: asyncio.Queue,
+        history: List[Dict[str, str]]
+    ) -> None:
+        """基于实际使用情况的智能记忆巩固（使用队列获取完整回复）。
+        
+        Args:
+            query: 用户查询
+            retrieved_memories: 检索到的所有记忆
+            full_context: 完整上下文（包含记忆）
+            response_queue: 用于获取完整回复的队列
+            history: 消息历史
+        """
+        try:
+            # 从队列获取完整回复
+            final_reply = await response_queue.get()
+            
+            # 准备判断上下文
+            system_prompt, episodic_texts, semantic_texts, message_history, final_reply_text = \
+                self._prepare_judgment_context(query, retrieved_memories, final_reply, history)
+            
+            # 在线程池中执行智能巩固
+            await asyncio.to_thread(
+                self.memory._intelligent_reconsolidate,
+                query,
+                retrieved_memories,
+                system_prompt,
+                message_history,
+                final_reply_text
+            )
+        except Exception as e:
+            logger.warning(f"Intelligent reconsolidation with queue failed: {e}")
     
     def _prepare_judgment_context(
         self,
@@ -550,15 +687,15 @@ def create_demo_interface():
         refresh_btn.click(fn=app.get_all_memories, outputs=[memory_display])
         
         send_btn.click(
-            fn=app.chat,
+            fn=app.chat_stream,
             inputs=[msg_input, chatbot],
-            outputs=[msg_input, chatbot, memory_display]
+            outputs=[chatbot, memory_display]
         )
         
         msg_input.submit(
-            fn=app.chat,
+            fn=app.chat_stream,
             inputs=[msg_input, chatbot],
-            outputs=[msg_input, chatbot, memory_display]
+            outputs=[chatbot, memory_display]
         )
         
         consolidate_btn.click(
