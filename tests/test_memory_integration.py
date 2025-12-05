@@ -112,7 +112,7 @@ async def test_app_integration():
     
     try:
         # 导入应用类
-        from app import MemoryDemoApp
+        from demo.app import MemoryDemoApp
         
         # 创建应用实例
         app = MemoryDemoApp()
