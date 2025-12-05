@@ -125,7 +125,7 @@ class MemoryDemoApp:
             return f"❌ 获取记忆失败: {str(e)}"
 
     async def chat(self, message: str, history: List[Any]) -> Tuple[str, List[Dict[str, str]], str]:
-        """Process chat message with optimized flow: search → respond → async add memory."""
+        """Process chat message with intelligent reconsolidation: search → respond → judge usage → reconsolidate used memories."""
         history_messages = self._normalize_history(history)
         
         if not self.memory:
@@ -147,7 +147,7 @@ class MemoryDemoApp:
                 message,
                 self.current_user_id,
                 5,
-                False  # reconsolidate off here; we handle asynchronously later
+                False  # reconsolidate off here; we handle intelligently later
             )
             
             # 3. 构建完整上下文（传入 history）
@@ -156,8 +156,14 @@ class MemoryDemoApp:
             # 4. 调用LLM生成回复（放在线程池中执行）
             ai_response = await asyncio.to_thread(self._generate_response, full_context, prepared_messages)
             
-            # 5. 异步巩固与写入：不阻塞当前回复
-            asyncio.create_task(self._reconsolidate_async(message))
+            # 5. 智能巩固与写入：基于实际使用情况
+            asyncio.create_task(self._intelligent_reconsolidate_async(
+                message, 
+                relevant_memories, 
+                full_context, 
+                ai_response, 
+                history_messages
+            ))
             asyncio.create_task(self._add_to_memory_async(message, history_messages))
             
             # 构建最终响应
@@ -341,6 +347,81 @@ Maintain a friendly and natural conversation style.
                 )
         except Exception as e:
             logger.warning(f"Async reconsolidation failed: {e}")
+    
+    async def _intelligent_reconsolidate_async(
+        self,
+        query: str,
+        retrieved_memories: List[MemoryRecord],
+        full_context: str,
+        final_reply: str,
+        history: List[Dict[str, str]]
+    ) -> None:
+        """基于实际使用情况的智能记忆巩固。
+        
+        Args:
+            query: 用户查询
+            retrieved_memories: 检索到的所有记忆
+            full_context: 完整上下文（包含记忆）
+            final_reply: 最终回复
+            history: 消息历史
+        """
+        try:
+            # 准备判断上下文
+            system_prompt, episodic_texts, semantic_texts, message_history, final_reply_text = \
+                self._prepare_judgment_context(query, retrieved_memories, final_reply, history)
+            
+            # 在线程池中执行智能巩固
+            await asyncio.to_thread(
+                self.memory._intelligent_reconsolidate,
+                query,
+                retrieved_memories,
+                system_prompt,
+                message_history,
+                final_reply_text
+            )
+        except Exception as e:
+            logger.warning(f"Intelligent reconsolidation failed: {e}")
+    
+    def _prepare_judgment_context(
+        self,
+        query: str,
+        retrieved_memories: List[MemoryRecord],
+        final_reply: str,
+        history: List[Dict[str, str]]
+    ) -> Tuple[str, List[str], List[str], List[Dict[str, str]], str]:
+        """为记忆使用判断准备完整上下文。
+        
+        Args:
+            query: 用户查询
+            retrieved_memories: 检索到的记忆
+            final_reply: 最终回复
+            history: 消息历史
+            
+        Returns:
+            (system_prompt, episodic_texts, semantic_texts, message_history, final_reply_text)
+        """
+        # 1. 获取系统提示词
+        system_prompt = self._get_system_prompt()
+        
+        # 2. 分离记忆
+        episodic_texts = [mem.text for mem in retrieved_memories if mem.memory_type == "episodic"]
+        semantic_texts = [mem.text for mem in retrieved_memories if mem.memory_type == "semantic"]
+        
+        # 3. 准备消息历史
+        message_history = history
+        
+        # 4. 最终回复
+        final_reply_text = final_reply
+        
+        return system_prompt, episodic_texts, semantic_texts, message_history, final_reply_text
+    
+    def _get_system_prompt(self) -> str:
+        """获取系统提示词。"""
+        try:
+            from prompts import MEMORY_ANSWER_PROMPT
+            return f"{MEMORY_ANSWER_PROMPT}\n\nUser ID: {self.current_user_id}"
+        except ImportError:
+            return f"You are an AI assistant with long-term memory capabilities. User ID: {self.current_user_id}"
     
     def _build_conversation_context(self, message: str, history: List[Dict[str, str]]) -> str:
         """构建用于记忆提取的对话上下文。"""

@@ -3,6 +3,7 @@
 from .write_decider import EpisodicWriteDecider, WriteDecision, MemoryRecord
 from .semantic_writer import SemanticWriter, SemanticExtraction
 from .reconsolidator import EpisodicReconsolidator
+from .memory_usage_judge import MemoryUsageJudge
 
 __all__ = [
     # Write Decider
@@ -14,4 +15,6 @@ __all__ = [
     "SemanticExtraction",
     # Reconsolidator
     "EpisodicReconsolidator",
+    # Memory Usage Judge
+    "MemoryUsageJudge",
 ]
