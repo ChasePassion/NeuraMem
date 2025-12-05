@@ -2,7 +2,10 @@
 
 from dataclasses import dataclass, field
 from typing import Optional
+import os
+import dotenv
 
+dotenv.load_dotenv()
 
 @dataclass
 class MemoryConfig:
@@ -13,7 +16,7 @@ class MemoryConfig:
         openrouter_api_key: API key for OpenRouter services
         openrouter_base_url: Base URL for OpenRouter API
         embedding_model: Model ID for text embedding (qwen/qwen3-embedding-4b)
-        llm_model: Model ID for LLM operations (x-ai/grok-4.1-fast:free)
+        llm_model: Model ID for LLM operations
         embedding_dim: Dimension of embedding vectors (2560 for qwen3-embedding-4b)
         collection_name: Name of the Milvus collection for memories
         k_semantic: Maximum number of semantic memories to retrieve
@@ -21,19 +24,19 @@ class MemoryConfig:
     """
     
     # Milvus configuration
-    milvus_uri: str = "http://115.190.109.17:19530"
+    milvus_uri: str = os.getenv("MILVUS_URL")
     collection_name: str = "memories"
     
     # SiliconFlow configuration (for embeddings)
-    siliconflow_api_key: str = "sk-polezsgvrdxmqxfwfwxgonkpzphiamsxojsmokmjirrvbzdp"
+    siliconflow_api_key: str = os.getenv("SILICONFLOW_API_KEY")
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
     
     # OpenRouter configuration (kept for fallback)
-    openrouter_api_key: str = "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"
+    openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY")
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     
     # DeepSeek configuration (primary LLM)
-    deepseek_api_key: str = "sk-d99c433f066744e3b9489b3ce80ac943"
+    deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY")
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
     
@@ -47,10 +50,3 @@ class MemoryConfig:
     # Retrieval configuration
     k_semantic: int = 5
     k_episodic: int = 5
-    
-    # Note: Merge/separate functionality has been removed.
-    # The following fields are no longer used:
-    # - t_merge_high (merge threshold)
-    # - t_amb_low (ambiguous similarity threshold)
-    # - merge_time_window_same_chat (time window for same chat merge)
-    # - merge_time_window_diff_chat (time window for different chat merge)
