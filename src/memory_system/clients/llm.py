@@ -91,6 +91,49 @@ class LLMClient:
                     fallback_error.last_error,
                 ) from fallback_error
     
+    def chat_stream(self, system_prompt: str, user_message: str):
+        """Call LLM for streaming text response.
+        
+        Args:
+            system_prompt: System prompt for the LLM
+            user_message: User message to process
+            
+        Yields:
+            Text chunks from LLM response
+            
+        Raises:
+            OpenRouterError: If API call fails after retries
+        """
+        try:
+            yield from self._chat_stream_with_retries(
+                client=self._client,
+                model=self._model,
+                system_prompt=system_prompt,
+                user_message=user_message,
+            )
+        except OpenRouterError as primary_error:
+            if not self._fallback_client:
+                raise
+            
+            logger.warning(
+                "Primary OpenRouter LLM failed; falling back to DeepSeek: %s",
+                primary_error,
+            )
+            try:
+                yield from self._chat_stream_with_retries(
+                    client=self._fallback_client,
+                    model=self._fallback_model,
+                    system_prompt=system_prompt,
+                    user_message=user_message,
+                )
+            except OpenRouterError as fallback_error:
+                # Surface combined failure context
+                raise OpenRouterError(
+                    f"{self._model} (primary + fallback {self._fallback_model})",
+                    self._max_retries,
+                    fallback_error.last_error,
+                ) from fallback_error
+    
     def chat_json(
         self,
         system_prompt: str,
@@ -181,6 +224,48 @@ class LLMClient:
                 last_error = e
                 logger.warning(
                     "LLM API attempt %s/%s for model %s failed: %s",
+                    attempt + 1,
+                    self._max_retries,
+                    model,
+                    e,
+                )
+                if attempt < self._max_retries - 1:
+                    delay = self._base_delay * (2**attempt)
+                    time.sleep(delay)
+        
+        raise OpenRouterError(model, self._max_retries, last_error)
+    
+    def _chat_stream_with_retries(
+        self,
+        client: OpenAI,
+        model: str,
+        system_prompt: str,
+        user_message: str,
+    ):
+        """Call a specific client with retries for streaming."""
+        last_error: Optional[Exception] = None
+        
+        for attempt in range(self._max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ],
+                    stream=True  # Enable streaming
+                )
+                
+                # Yield content chunks from the stream
+                for chunk in response:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+                return  # Success, exit the retry loop
+                
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "LLM API streaming attempt %s/%s for model %s failed: %s",
                     attempt + 1,
                     self._max_retries,
                     model,
