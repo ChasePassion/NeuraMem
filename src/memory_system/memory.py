@@ -16,6 +16,7 @@ from .processors import (
     EpisodicWriteDecider,
     SemanticWriter,
     EpisodicReconsolidator,
+    MemoryUsageJudge,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ class Memory:
         self._write_decider = EpisodicWriteDecider(self._llm_client)
         self._semantic_writer = SemanticWriter(self._llm_client)
         self._reconsolidator = EpisodicReconsolidator(self._llm_client)
+        self._memory_usage_judge = MemoryUsageJudge(self._llm_client)
         
         # Create collection if not exists
         self._store.create_collection(dim=self._config.embedding_dim)
@@ -373,6 +375,123 @@ class Memory:
                 logger.warning(
                     f"Failed to reconsolidate memory {memory_id}: {e}"
                 )
+    
+    def _intelligent_reconsolidate(
+        self,
+        query: str,
+        retrieved_memories: List[MemoryRecord],
+        system_prompt: str,
+        message_history: List[Dict[str, str]],
+        final_reply: str
+    ) -> None:
+        """Intelligent reconsolidation based on actual memory usage.
+        
+        This method judges which episodic memories were actually used in generating
+        the final reply, and only reconsolidates those memories.
+        
+        Args:
+            query: The user's query
+            retrieved_memories: All memories that were retrieved
+            system_prompt: The system prompt used
+            message_history: Full message history
+            final_reply: The assistant's final reply
+        """
+        # 1. Separate episodic and semantic memories
+        episodic_memories = [mem for mem in retrieved_memories if mem.memory_type == "episodic"]
+        semantic_memories = [mem for mem in retrieved_memories if mem.memory_type == "semantic"]
+        
+        if not episodic_memories:
+            return
+        
+        # 2. Prepare input data for judgment
+        episodic_texts = [mem.text for mem in episodic_memories]
+        semantic_texts = [mem.text for mem in semantic_memories]
+        
+        # 3. Judge which episodic memories were actually used
+        used_episodic_texts = self._memory_usage_judge.judge_used_memories(
+            system_prompt=system_prompt,
+            episodic_memories=episodic_texts,
+            semantic_memories=semantic_texts,
+            message_history=message_history,
+            final_reply=final_reply
+        )
+        
+        if not used_episodic_texts:
+            logger.info("No episodic memories were actually used, skipping reconsolidation")
+            return
+        
+        # 4. Convert used episodic memories to hits for reconsolidation
+        used_episodic_hits = []
+        for mem in episodic_memories:
+            if mem.text in used_episodic_texts:
+                # Convert MemoryRecord back to hit format
+                hit = self._memory_record_to_hit(mem)
+                used_episodic_hits.append(hit)
+        
+        # 5. Execute reconsolidation only for used memories
+        logger.info(f"Reconsolidating {len(used_episodic_hits)} actually used memories")
+        for hit in used_episodic_hits:
+            self._reconsolidate_single_memory(hit, query)
+    
+    def _memory_record_to_hit(self, record: MemoryRecord) -> Dict[str, Any]:
+        """Convert a MemoryRecord back to hit format for reconsolidation."""
+        return {
+            "id": record.id,
+            "user_id": record.user_id,
+            "memory_type": record.memory_type,
+            "ts": record.ts,
+            "chat_id": record.chat_id,
+            "text": record.text,
+            "distance": record.distance
+        }
+    
+    def _reconsolidate_single_memory(
+        self,
+        hit: Dict[str, Any],
+        current_context: str
+    ) -> None:
+        """Reconsolidate a single episodic memory.
+        
+        Args:
+            hit: Memory hit in dictionary format
+            current_context: Current query/context text
+        """
+        memory_id = hit.get("id")
+        if memory_id is None:
+            return
+        
+        try:
+            # Call EpisodicReconsolidator with old memory and current context
+            updated_memory = self._reconsolidator.reconsolidate(
+                old_memory=hit,
+                current_context=current_context
+            )
+            
+            if not updated_memory:
+                return
+            
+            # Check if text was changed
+            old_text = hit.get("text", "")
+            new_text = updated_memory.get("text", "")
+            
+            # Prepare update data (v2 schema: only text and vector)
+            update_data = {}
+            
+            # Update text if changed
+            if new_text and new_text != old_text:
+                update_data["text"] = new_text
+                # Regenerate embedding for new text
+                embeddings = self._embedding_client.encode([new_text])
+                if embeddings:
+                    update_data["vector"] = embeddings[0]
+            
+            # Apply updates to Milvus if there are changes
+            if update_data:
+                self._store.update(memory_id, update_data, base_record=hit)
+                logger.debug(f"Reconsolidated memory {memory_id} with context")
+                
+        except Exception as e:
+            logger.warning(f"Failed to reconsolidate memory {memory_id}: {e}")
     
     def _hit_to_memory_record(self, hit: Dict[str, Any]) -> MemoryRecord:
         """Convert a search hit to MemoryRecord (v2 schema)."""
