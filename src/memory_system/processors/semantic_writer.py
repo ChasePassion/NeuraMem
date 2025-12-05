@@ -29,9 +29,10 @@ class SemanticExtraction:
 class SemanticWriter:
     """Semantic Memory Writer processor.
     
-    Analyzes episodic memories to extract stable, long-term facts that should
-    be promoted to semantic memory.
+    Performs pattern merging: analyzes multiple episodic memories together
+    to extract stable, long-term facts that should be promoted to semantic memory.
     
+    Uses batch processing to identify abstract patterns across concrete episodes.
     Uses SEMANTIC_MEMORY_WRITER_PROMPT to call LLM for extraction.
     """
     
@@ -44,17 +45,22 @@ class SemanticWriter:
         self._llm = llm_client
         self._prompt = SEMANTIC_MEMORY_WRITER_PROMPT
     
-    def extract(self, episodic_memory: Dict[str, Any]) -> SemanticExtraction:
-        """Extract semantic facts from an episodic memory.
+    def extract(self, consolidation_data: Dict[str, List[str]]) -> SemanticExtraction:
+        """Extract semantic facts from batch of episodic memories.
+        
+        New batch processing implementation: performs pattern merging across
+        multiple episodic memories to extract stable, long-term semantic facts.
         
         Args:
-            episodic_memory: Full episodic memory record as dict
+            consolidation_data: Dictionary containing:
+                - episodic_texts: List of text content from episodic memories
+                - existing_semantic_texts: List of text content from existing semantic memories
             
         Returns:
             SemanticExtraction with write_semantic flag and extracted facts
         """
-        # Prepare input for LLM
-        user_message = json.dumps(episodic_memory, ensure_ascii=False)
+        # Prepare input for LLM (batch mode)
+        user_message = json.dumps(consolidation_data, ensure_ascii=False)
         
         # Default response for fallback
         default_response = {
@@ -62,7 +68,7 @@ class SemanticWriter:
             "facts": []
         }
         
-        # Call LLM for extraction
+        # Call LLM for batch extraction
         response = self._llm.chat_json(
             system_prompt=self._prompt,
             user_message=user_message,
@@ -77,7 +83,8 @@ class SemanticWriter:
         facts = [str(f) for f in raw_facts if f]
         
         logger.info(
-            f"SemanticWriter extraction for memory: "
+            f"SemanticWriter batch extraction: "
+            f"episodic_count={len(consolidation_data.get('episodic_texts', []))}, "
             f"write_semantic={write_semantic}, facts_count={len(facts)}"
         )
         

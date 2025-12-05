@@ -44,8 +44,9 @@ class TestAddSearchReconsolidateFlow:
         This test verifies:
         1. Memory can be added via add() method
         2. Memory can be retrieved via search()
-        3. Hit count increments on retrieval
-        4. Reconsolidation updates the memory with new context
+        3. Reconsolidation updates the memory with new context
+        
+        Updated for v2 schema (simplified, no hit_count or metadata fields).
         """
         user_id = f"integ_user_{uuid.uuid4().hex[:8]}"
         chat_id = f"chat_{uuid.uuid4().hex[:8]}"
@@ -54,24 +55,15 @@ class TestAddSearchReconsolidateFlow:
         text = "I am a PhD student studying machine learning at Stanford University"
         ids = memory_system.add(text=text, user_id=user_id, chat_id=chat_id)
         
-        # If write decider rejected, create memory directly for testing
+        # If write decider rejected, create memory directly for testing (v2 schema)
         if not ids:
             record = {
                 "user_id": user_id,
                 "memory_type": "episodic",
                 "ts": int(time.time()),
                 "chat_id": chat_id,
-                "who": "user",
                 "text": text,
                 "vector": [0.1] * 2560,
-                "hit_count": 0,
-                "metadata": {
-                    "context": "academic background",
-                    "thing": "PhD student at Stanford",
-                    "time": "",
-                    "chatid": chat_id,
-                    "who": "user"
-                }
             }
             ids = memory_system.store.insert([record])
         
@@ -96,16 +88,17 @@ class TestAddSearchReconsolidateFlow:
         
         time.sleep(0.5)
         
-        # Step 3: Verify hit count was incremented
+        # Step 3: Verify memory exists and can be retrieved (v2 schema)
         updated_records = memory_system.store.query(
             filter_expr=f'user_id == "{user_id}"',
-            output_fields=["hit_count", "metadata"]
+            output_fields=["text", "memory_type"]
         )
         
         assert len(updated_records) > 0, "Should have records for user"
-        # Hit count should be at least 1 after search
-        hit_counts = [r.get("hit_count", 0) for r in updated_records]
-        assert any(hc >= 1 for hc in hit_counts), "At least one memory should have hit_count >= 1"
+        # Verify the memory content
+        texts = [r.get("text", "") for r in updated_records]
+        assert any("machine learning" in t.lower() for t in texts), \
+            "Should find memory about machine learning"
         
         # Cleanup
         memory_system.reset(user_id)
@@ -113,45 +106,30 @@ class TestAddSearchReconsolidateFlow:
     def test_search_returns_both_memory_types(self, memory_system):
         """Test that search returns both episodic and semantic memories.
         
+        Updated for v2 schema (simplified, no metadata fields).
         Requirements: 3.2
         """
         user_id = f"integ_user_{uuid.uuid4().hex[:8]}"
         chat_id = f"chat_{uuid.uuid4().hex[:8]}"
         
-        # Create episodic memory
+        # Create episodic memory (v2 schema)
         episodic_record = {
             "user_id": user_id,
             "memory_type": "episodic",
             "ts": int(time.time()),
             "chat_id": chat_id,
-            "who": "user",
             "text": "I attended a conference on deep learning last week",
             "vector": [0.2] * 2560,
-            "hit_count": 0,
-            "metadata": {
-                "context": "conference attendance",
-                "thing": "deep learning conference",
-                "time": "",
-                "chatid": chat_id,
-                "who": "user"
-            }
         }
         
-        # Create semantic memory
+        # Create semantic memory (v2 schema)
         semantic_record = {
             "user_id": user_id,
             "memory_type": "semantic",
             "ts": int(time.time()),
             "chat_id": chat_id,
-            "who": "user",
             "text": "The user is interested in deep learning research",
             "vector": [0.2] * 2560,
-            "hit_count": 0,
-            "metadata": {
-                "fact": "interested in deep learning",
-                "source_chatid": chat_id,
-                "first_seen": "2024-01-01"
-            }
         }
         
         episodic_ids = memory_system.store.insert([episodic_record])
@@ -185,31 +163,42 @@ class TestSemanticMemoryExtraction:
     def test_consolidation_extracts_semantic_facts(self, memory_system):
         """Test that consolidation extracts semantic facts from episodic memories.
         
+        Updated for batch pattern merging consolidation logic.
         Requirements: 6.1, 6.6
         """
         user_id = f"integ_semantic_{uuid.uuid4().hex[:8]}"
         chat_id = f"chat_{uuid.uuid4().hex[:8]}"
         
-        # Create an episodic memory with stable identity information
-        episodic_record = {
-            "user_id": user_id,
-            "memory_type": "episodic",
-            "ts": int(time.time()),
-            "chat_id": chat_id,
-            "who": "user",
-            "text": "I am a software engineer at Google working on machine learning infrastructure",
-            "vector": [0.3] * 2560,
-            "hit_count": 5,  # High hit count suggests stable fact
-            "metadata": {
-                "context": "career information",
-                "thing": "software engineer at Google",
-                "time": "",
-                "chatid": chat_id,
-                "who": "user"
+        # Create multiple episodic memories with stable identity information
+        # (batch consolidation works better with multiple memories)
+        episodic_records = [
+            {
+                "user_id": user_id,
+                "memory_type": "episodic",
+                "ts": int(time.time()),
+                "chat_id": chat_id,
+                "text": "I am a software engineer at Google working on machine learning infrastructure",
+                "vector": [0.3] * 2560,
+            },
+            {
+                "user_id": user_id,
+                "memory_type": "episodic",
+                "ts": int(time.time()) + 1,
+                "chat_id": chat_id,
+                "text": "I work on ML infrastructure at Google and enjoy building scalable systems",
+                "vector": [0.31] * 2560,
+            },
+            {
+                "user_id": user_id,
+                "memory_type": "episodic",
+                "ts": int(time.time()) + 2,
+                "chat_id": chat_id,
+                "text": "My role at Google involves designing machine learning pipelines",
+                "vector": [0.32] * 2560,
             }
-        }
+        ]
         
-        ids = memory_system.store.insert([episodic_record])
+        ids = memory_system.store.insert(episodic_records)
         time.sleep(0.5)
         
         # Count semantic memories before
@@ -217,29 +206,35 @@ class TestSemanticMemoryExtraction:
             filter_expr=f'user_id == "{user_id}" and memory_type == "semantic"'
         )
         
-        # Run consolidation
+        # Run consolidation (batch pattern merging)
         stats = memory_system.consolidate(user_id=user_id)
         time.sleep(0.5)
+        
+        # Verify consolidation stats
+        assert stats.memories_processed == 3, "Should process 3 episodic memories"
         
         # Check if semantic memories were created
         after_semantic = memory_system.store.count(
             filter_expr=f'user_id == "{user_id}" and memory_type == "semantic"'
         )
         
-        # If semantic extraction happened, verify the record structure
+        # If semantic extraction happened, verify the record structure (v2 schema)
         if stats.semantic_created > 0:
             semantic_records = memory_system.store.query(
                 filter_expr=f'user_id == "{user_id}" and memory_type == "semantic"',
                 output_fields=["*"]
             )
             
+            assert len(semantic_records) > 0, "Should have semantic memories"
+            
             for record in semantic_records:
-                assert record.get("memory_type") == "semantic"
-                metadata = record.get("metadata", {})
-                # Verify required semantic metadata fields
-                assert "fact" in metadata, "Semantic memory should have 'fact' field"
-                assert "source_chatid" in metadata, "Semantic memory should have 'source_chatid'"
-                assert "first_seen" in metadata, "Semantic memory should have 'first_seen'"
+                # Verify v2 schema fields
+                assert record.get("memory_type") == "semantic", "Should be semantic type"
+                assert record.get("user_id") == user_id, "Should match user_id"
+                assert record.get("chat_id") == chat_id, "Should have chat_id"
+                assert len(record.get("text", "")) > 0, "Should have text content"
+                assert record.get("ts") > 0, "Should have timestamp"
+                # v2 schema: no metadata field required
         
         # Cleanup
         memory_system.reset(user_id)
@@ -254,44 +249,29 @@ class TestCRUDOperations:
     def test_update_memory(self, memory_system):
         """Test updating a memory record.
         
+        Updated for v2 schema (simplified, no metadata fields).
         Requirements: 8.3
         """
         user_id = f"integ_update_{uuid.uuid4().hex[:8]}"
         chat_id = f"chat_{uuid.uuid4().hex[:8]}"
         
-        # Create a memory
+        # Create a memory (v2 schema)
         record = {
             "user_id": user_id,
             "memory_type": "episodic",
             "ts": int(time.time()),
             "chat_id": chat_id,
-            "who": "user",
             "text": "Original text content",
             "vector": [0.5] * 2560,
-            "hit_count": 0,
-            "metadata": {
-                "context": "original",
-                "thing": "original thing",
-                "time": "",
-                "chatid": chat_id,
-                "who": "user"
-            }
         }
         
         ids = memory_system.store.insert([record])
         memory_id = ids[0]
         time.sleep(0.3)
         
-        # Update the memory
+        # Update the memory (v2 schema - only text)
         success = memory_system.update(memory_id, {
-            "text": "Updated text content",
-            "metadata": {
-                "context": "updated",
-                "thing": "updated thing",
-                "time": "",
-                "chatid": chat_id,
-                "who": "user"
-            }
+            "text": "Updated text content"
         })
         
         assert success, "Update should succeed"
@@ -300,7 +280,7 @@ class TestCRUDOperations:
         # Verify update - query by user_id since ID might change
         updated = memory_system.store.query(
             filter_expr=f'user_id == "{user_id}"',
-            output_fields=["text", "metadata"]
+            output_fields=["text"]
         )
         
         assert len(updated) > 0, "Should find updated record"
@@ -314,28 +294,20 @@ class TestCRUDOperations:
     def test_delete_memory(self, memory_system):
         """Test deleting a memory record.
         
+        Updated for v2 schema (simplified, no metadata fields).
         Requirements: 8.4
         """
         user_id = f"integ_delete_{uuid.uuid4().hex[:8]}"
         chat_id = f"chat_{uuid.uuid4().hex[:8]}"
         
-        # Create a memory
+        # Create a memory (v2 schema)
         record = {
             "user_id": user_id,
             "memory_type": "episodic",
             "ts": int(time.time()),
             "chat_id": chat_id,
-            "who": "user",
             "text": "Memory to be deleted",
             "vector": [0.55] * 2560,
-            "hit_count": 0,
-            "metadata": {
-                "context": "",
-                "thing": "",
-                "time": "",
-                "chatid": chat_id,
-                "who": "user"
-            }
         }
         
         ids = memory_system.store.insert([record])
@@ -358,12 +330,13 @@ class TestCRUDOperations:
     def test_reset_user_memories(self, memory_system):
         """Test resetting all memories for a user.
         
+        Updated for v2 schema (simplified, no metadata fields).
         Requirements: 8.5
         """
         user_id = f"integ_reset_{uuid.uuid4().hex[:8]}"
         chat_id = f"chat_{uuid.uuid4().hex[:8]}"
         
-        # Create multiple memories
+        # Create multiple memories (v2 schema)
         records = []
         for i in range(3):
             record = {
@@ -371,17 +344,8 @@ class TestCRUDOperations:
                 "memory_type": "episodic" if i % 2 == 0 else "semantic",
                 "ts": int(time.time()) + i,
                 "chat_id": chat_id,
-                "who": "user",
                 "text": f"Memory {i} for reset test",
                 "vector": [0.1 + i * 0.1] * 2560,
-                "hit_count": i,
-                "metadata": {
-                    "context": f"context {i}",
-                    "thing": f"thing {i}",
-                    "time": "",
-                    "chatid": chat_id,
-                    "who": "user"
-                }
             }
             records.append(record)
         

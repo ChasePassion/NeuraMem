@@ -1,6 +1,7 @@
 """Property-based tests for semantic memory operations.
 
 This module contains property tests for semantic memory creation and extraction.
+Updated for batch pattern merging consolidation logic.
 """
 
 import pytest
@@ -10,7 +11,7 @@ import time as time_module
 
 from src.memory_system.clients.milvus_store import MilvusStore
 from src.memory_system.config import MemoryConfig
-from tests.properties.dummy_llm import DummyLLMClient
+from src.memory_system.processors.semantic_writer import SemanticWriter
 
 
 def iso_time_strategy():
@@ -39,6 +40,26 @@ def fact_strategy():
         whitelist_categories=('L', 'N', 'P', 'Z'),
         whitelist_characters=' '
     )).filter(lambda x: len(x.strip()) >= 10)
+
+
+class DummyLLMForBatch:
+    """Dummy LLM client for batch consolidation testing."""
+    
+    def __init__(self, should_write=True, facts=None):
+        self.should_write = should_write
+        self.facts = facts or []
+    
+    def chat_json(self, system_prompt, user_message, default):
+        """Return batch consolidation response."""
+        if self.should_write and self.facts:
+            return {
+                "write_semantic": True,
+                "facts": self.facts
+            }
+        return {
+            "write_semantic": False,
+            "facts": []
+        }
 
 
 @pytest.fixture(scope="class")
@@ -162,3 +183,88 @@ class TestSemanticMemoryFieldCompleteness:
                     milvus_store.delete(ids=created_ids)
                 except Exception:
                     pass
+
+
+class TestBatchPatternMerging:
+    """Property tests for batch pattern merging consolidation.
+    
+    Tests the new batch processing logic where multiple episodic memories
+    are analyzed together to extract semantic facts.
+    """
+
+    @settings(
+        max_examples=3,
+        suppress_health_check=[HealthCheck.too_slow],
+        deadline=None
+    )
+    @given(
+        episodic_texts=st.lists(
+            st.text(min_size=10, max_size=100),
+            min_size=1,
+            max_size=5
+        ),
+        existing_semantic_texts=st.lists(
+            st.text(min_size=10, max_size=100),
+            min_size=0,
+            max_size=3
+        ),
+        facts=st.lists(fact_strategy(), min_size=1, max_size=2)
+    )
+    def test_batch_extraction_accepts_correct_input(
+        self,
+        episodic_texts,
+        existing_semantic_texts,
+        facts
+    ):
+        """
+        Test that SemanticWriter.extract accepts batch consolidation data
+        and returns valid SemanticExtraction.
+        """
+        # Create dummy LLM that returns facts
+        dummy_llm = DummyLLMForBatch(should_write=True, facts=facts)
+        writer = SemanticWriter(dummy_llm)
+        
+        # Prepare batch consolidation data
+        consolidation_data = {
+            "episodic_texts": episodic_texts,
+            "existing_semantic_texts": existing_semantic_texts
+        }
+        
+        # Call batch extraction
+        extraction = writer.extract(consolidation_data)
+        
+        # Verify result structure
+        assert hasattr(extraction, 'write_semantic')
+        assert hasattr(extraction, 'facts')
+        assert extraction.write_semantic == True
+        assert len(extraction.facts) == len(facts)
+        
+    @settings(
+        max_examples=3,
+        suppress_health_check=[HealthCheck.too_slow],
+        deadline=None
+    )
+    @given(
+        episodic_texts=st.lists(
+            st.text(min_size=10, max_size=100),
+            min_size=1,
+            max_size=5
+        )
+    )
+    def test_batch_extraction_no_write_case(self, episodic_texts):
+        """
+        Test that SemanticWriter.extract correctly handles no-write case.
+        """
+        # Create dummy LLM that returns no facts
+        dummy_llm = DummyLLMForBatch(should_write=False, facts=[])
+        writer = SemanticWriter(dummy_llm)
+        
+        consolidation_data = {
+            "episodic_texts": episodic_texts,
+            "existing_semantic_texts": []
+        }
+        
+        extraction = writer.extract(consolidation_data)
+        
+        assert extraction.write_semantic == False
+        assert len(extraction.facts) == 0

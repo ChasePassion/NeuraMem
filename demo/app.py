@@ -35,7 +35,7 @@ class MemoryDemoApp:
         """Initialize the demo application."""
         self.memory: Optional[Memory] = None
         self.current_user_id: str = "demo_user"
-        self.chat_history: List[Tuple[str, str]] = []
+        self.chat_history: List[Dict[str, str]] = []
         self.consolidation_log: List[str] = []
         self.is_consolidating: bool = False
         self.scheduled_task: Optional[threading.Timer] = None
@@ -124,17 +124,22 @@ class MemoryDemoApp:
         except Exception as e:
             return f"❌ 获取记忆失败: {str(e)}"
 
-    async def chat(self, message: str, history: List[Tuple[str, str]]) -> Tuple[str, List[Tuple[str, str]], str]:
+    async def chat(self, message: str, history: List[Any]) -> Tuple[str, List[Dict[str, str]], str]:
         """Process chat message with optimized flow: search → respond → async add memory."""
+        history_messages = self._normalize_history(history)
+        
         if not self.memory:
-            return "", history + [(message, "⚠️ 请先初始化记忆系统")], await asyncio.to_thread(self.get_all_memories)
+            return "", history_messages + [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": "⚠️ 请先初始化记忆系统"}
+            ], await asyncio.to_thread(self.get_all_memories)
         
         if not message.strip():
-            return "", history, await asyncio.to_thread(self.get_all_memories)
+            return "", history_messages, await asyncio.to_thread(self.get_all_memories)
         
         try:
             # 1. 准备消息和上下文
-            prepared_messages = self._prepare_messages(message, history)
+            prepared_messages = self._prepare_messages(message, history_messages)
             
             # 2. 检索相关记忆（禁用同步重巩固，避免阻塞）
             relevant_memories = await asyncio.to_thread(
@@ -146,32 +151,70 @@ class MemoryDemoApp:
             )
             
             # 3. 构建完整上下文（传入 history）
-            full_context = self._build_context_with_memories(message, relevant_memories, history)
+            full_context = self._build_context_with_memories(message, relevant_memories, history_messages)
             
             # 4. 调用LLM生成回复（放在线程池中执行）
             ai_response = await asyncio.to_thread(self._generate_response, full_context, prepared_messages)
             
             # 5. 异步巩固与写入：不阻塞当前回复
             asyncio.create_task(self._reconsolidate_async(message))
-            asyncio.create_task(self._add_to_memory_async(message, history))
+            asyncio.create_task(self._add_to_memory_async(message, history_messages))
             
             # 构建最终响应
             final_response = ai_response
-            new_history = history + [(message, final_response)]
+            new_history = history_messages + [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": final_response}
+            ]
             return "", new_history, await asyncio.to_thread(self.get_all_memories)
             
         except Exception as e:
             error_msg = f"❌ 处理失败: {str(e)}"
-            return "", history + [(message, error_msg)], await asyncio.to_thread(self.get_all_memories)
+            return "", history_messages + [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": error_msg}
+            ], await asyncio.to_thread(self.get_all_memories)
     
-    def _prepare_messages(self, message: str, history: List[Tuple[str, str]]) -> List[Dict]:
-        """准备和标准化消息，包含历史对话上下文。"""
-        messages = []
+    def _normalize_history(self, history: List[Any]) -> List[Dict[str, str]]:
+        """Normalize Chatbot history to the messages format Gradio expects."""
+        normalized: List[Dict[str, str]] = []
         
-        # 添加历史对话（最近50轮）
-        for user_msg, ai_msg in history[-50:]:
-            messages.append({"role": "user", "content": user_msg})
-            messages.append({"role": "assistant", "content": ai_msg})
+        for item in history or []:
+            if isinstance(item, dict) and "role" in item and "content" in item:
+                normalized.append({"role": str(item["role"]), "content": str(item["content"])})
+            elif hasattr(item, "role") and hasattr(item, "content"):
+                role = getattr(item, "role", None)
+                content = getattr(item, "content", None)
+                if role is not None and content is not None:
+                    normalized.append({"role": str(role), "content": str(content)})
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                user_msg, ai_msg = item
+                normalized.append({"role": "user", "content": str(user_msg)})
+                normalized.append({"role": "assistant", "content": str(ai_msg)})
+        
+        return normalized
+    
+    def _history_pairs(self, history: List[Dict[str, str]]) -> List[Tuple[str, str]]:
+        """Convert message-style history into user/assistant pairs for logging or prompts."""
+        pairs: List[Tuple[str, str]] = []
+        last_user: Optional[str] = None
+        
+        for msg in history:
+            if msg.get("role") == "user":
+                last_user = msg.get("content", "")
+            elif msg.get("role") == "assistant" and last_user is not None:
+                pairs.append((last_user, msg.get("content", "")))
+                last_user = None
+        
+        return pairs
+    
+    def _prepare_messages(self, message: str, history: List[Dict[str, str]]) -> List[Dict]:
+        """准备和标准化消息，包含历史对话上下文。"""
+        messages = [
+            {"role": msg["role"], "content": msg["content"]}
+            for msg in history[-50:]
+            if isinstance(msg, dict) and "role" in msg and "content" in msg
+        ]
         
         # 添加当前消息
         messages.append({"role": "user", "content": message})
@@ -192,13 +235,14 @@ class MemoryDemoApp:
             logger.warning(f"Failed to fetch memories: {e}")
             return []
     
-    def _build_context_with_memories(self, message: str, memories: List[MemoryRecord], history: List[Tuple[str, str]]) -> str:
+    def _build_context_with_memories(self, message: str, memories: List[MemoryRecord], history: List[Dict[str, str]]) -> str:
         """构建包含记忆的完整上下文。"""
         context_parts = []
         
         # 分离情景记忆和语义记忆
         episodic_memories = [mem for mem in memories if mem.memory_type == "episodic"]
         semantic_memories = [mem for mem in memories if mem.memory_type == "semantic"]
+        history_pairs = self._history_pairs(history)
         
         # 1. 情景记忆部分
         context_parts.append("Here are the episodic memories:")
@@ -220,8 +264,8 @@ class MemoryDemoApp:
         
         # 3. 历史对话部分
         context_parts.append("Here are the history messages:")
-        if history:
-            for i, (user_msg, ai_msg) in enumerate(history[-3:], 1):
+        if history_pairs:
+            for i, (user_msg, ai_msg) in enumerate(history_pairs[-3:], 1):
                 context_parts.append(f"Turn {i}:")
                 context_parts.append(f"  User: {user_msg}")
                 context_parts.append(f"  Assistant: {ai_msg}")
@@ -256,7 +300,7 @@ Maintain a friendly and natural conversation style.
         except Exception as llm_error:
             return f"抱歉，我暂时无法生成回复。错误: {str(llm_error)}"
     
-    async def _add_to_memory_async(self, message: str, history: List[Tuple[str, str]]) -> None:
+    async def _add_to_memory_async(self, message: str, history: List[Dict[str, str]]) -> None:
         """异步添加记忆到后台（不阻塞 Gradio 事件循环）。"""
         try:
             chat_id = f"chat_{int(time.time())}"
@@ -298,12 +342,13 @@ Maintain a friendly and natural conversation style.
         except Exception as e:
             logger.warning(f"Async reconsolidation failed: {e}")
     
-    def _build_conversation_context(self, message: str, history: List[Tuple[str, str]]) -> str:
+    def _build_conversation_context(self, message: str, history: List[Dict[str, str]]) -> str:
         """构建用于记忆提取的对话上下文。"""
         # 包含最近的对话历史（最多3轮）
         context_parts = []
+        history_pairs = self._history_pairs(history)
         
-        for user_msg, ai_msg in history[-3:]:
+        for user_msg, ai_msg in history_pairs[-3:]:
             context_parts.append(f"用户: {user_msg}")
             context_parts.append(f"助手: {ai_msg}")
         

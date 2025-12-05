@@ -502,7 +502,8 @@ class Memory:
     def consolidate(self, user_id: Optional[str] = None) -> ConsolidationStats:
         """Run consolidation process for memories.
         
-        Performs semantic fact extraction from episodic memories.
+        Performs batch pattern merging: analyzes multiple episodic memories together
+        to extract stable, long-term semantic facts.
         
         Args:
             user_id: Optional user to consolidate. If None, consolidates all.
@@ -514,27 +515,43 @@ class Memory:
         """
         stats = ConsolidationStats()
         
-        # Query episodic memories to process
+        # 1. Query episodic memories to process
         if user_id:
-            filter_expr = f'user_id == "{user_id}" and memory_type == "episodic"'
+            episodic_filter = f'user_id == "{user_id}" and memory_type == "episodic"'
+            semantic_filter = f'user_id == "{user_id}" and memory_type == "semantic"'
         else:
-            filter_expr = 'memory_type == "episodic"'
+            episodic_filter = 'memory_type == "episodic"'
+            semantic_filter = 'memory_type == "semantic"'
         
-        memories = self._store.query(filter_expr=filter_expr, limit=1000)
-        stats.memories_processed = len(memories)
+        episodic_memories = self._store.query(filter_expr=episodic_filter, limit=1000)
+        semantic_memories = self._store.query(filter_expr=semantic_filter, limit=1000)
+        
+        stats.memories_processed = len(episodic_memories)
         
         logger.info(
             f"Consolidation started for user_id={user_id or 'all'}: "
-            f"processing {len(memories)} episodic memories"
+            f"processing {len(episodic_memories)} episodic memories, "
+            f"{len(semantic_memories)} existing semantic memories"
         )
         
-        # Semantic extraction from episodic memories
-        for memory in memories:
-            # Extract semantic facts
-            extraction = self._semantic_writer.extract(memory)
-            if extraction.write_semantic and extraction.facts:
-                self._create_semantic_memories(memory, extraction.facts)
-                stats.semantic_created += len(extraction.facts)
+        # 2. Prepare batch processing data
+        episodic_texts = [mem.get("text", "") for mem in episodic_memories]
+        existing_semantic_texts = [mem.get("text", "") for mem in semantic_memories]
+        
+        consolidation_data = {
+            "episodic_texts": episodic_texts,
+            "existing_semantic_texts": existing_semantic_texts
+        }
+        
+        # 3. Call batch pattern merging
+        extraction = self._semantic_writer.extract(consolidation_data)
+        
+        # 4. Create new semantic memories
+        if extraction.write_semantic and extraction.facts:
+            # Use first episodic memory as source for metadata (user_id, chat_id)
+            source_memory = episodic_memories[0] if episodic_memories else {}
+            self._create_semantic_memories(source_memory, extraction.facts)
+            stats.semantic_created += len(extraction.facts)
         
         # Log consolidation statistics
         logger.info(
