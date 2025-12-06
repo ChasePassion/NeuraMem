@@ -19,6 +19,14 @@ from .processors import (
     MemoryUsageJudge,
 )
 
+# Langfuse imports for monitoring
+try:
+    from langfuse import observe, get_client
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+    logging.warning("Langfuse not available - monitoring disabled")
+
 logger = logging.getLogger(__name__)
 
 
@@ -83,6 +91,9 @@ class Memory:
         # Create collection if not exists
         self._store.create_collection(dim=self._config.embedding_dim)
         
+        # Initialize Langfuse client if available
+        self._langfuse_client = self._create_langfuse_client()
+        
         logger.info(
             f"Memory system initialized with collection '{self._config.collection_name}'"
         )
@@ -109,7 +120,27 @@ class Memory:
             uri=self._config.milvus_uri,
             collection_name=self._config.collection_name
         )
+    
+    def _create_langfuse_client(self):
+        """Create Langfuse client if configuration is available."""
+        if not LANGFUSE_AVAILABLE:
+            return None
+            
+        if (self._config.langfuse_secret_key and 
+            self._config.langfuse_public_key):
+            try:
+                from langfuse import Langfuse
+                return Langfuse(
+                    secret_key=self._config.langfuse_secret_key,
+                    public_key=self._config.langfuse_public_key,
+                    host=self._config.langfuse_base_url
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create Langfuse client: {e}")
+                return None
+        return None
 
+    @observe(as_type="agent") if LANGFUSE_AVAILABLE else lambda func: func
     def add(
         self,
         text: str,
@@ -134,6 +165,21 @@ class Memory:
             
         Requirements: 2.1, 2.2, 2.3, 8.1
         """
+        # Update Langfuse trace if available
+        if LANGFUSE_AVAILABLE and self._langfuse_client:
+            try:
+                get_client().update_current_trace(
+                    session_id=f"chat_{user_id}_{chat_id}",
+                    user_id=user_id,
+                    tags=["memory_add", "episodic"],
+                    metadata={
+                        "operation": "add_memory",
+                        "chat_id": chat_id,
+                        "text_length": len(text)
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update Langfuse trace: {e}")
         # Prepare conversation turns for write decider
         turns = [{"role": "user", "content": text}]
         
@@ -219,6 +265,7 @@ class Memory:
 
         return ids
 
+    @observe(as_type="agent") if LANGFUSE_AVAILABLE else lambda func: func
     def search(
         self,
         query: str,
@@ -243,6 +290,22 @@ class Memory:
             
         Requirements: 3.1, 3.2, 3.3, 3.4, 4.1, 4.5
         """
+        # Update Langfuse trace if available
+        if LANGFUSE_AVAILABLE and self._langfuse_client:
+            try:
+                get_client().update_current_trace(
+                    session_id=f"search_{user_id}_{int(time.time())}",
+                    user_id=user_id,
+                    tags=["memory_search", "retrieval"],
+                    metadata={
+                        "operation": "search_memory",
+                        "query_length": len(query),
+                        "limit": limit,
+                        "reconsolidate": reconsolidate
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update Langfuse trace: {e}")
         # Generate embedding for query
         query_vectors = self._embedding_client.encode([query])
         
@@ -376,6 +439,7 @@ class Memory:
                     f"Failed to reconsolidate memory {memory_id}: {e}"
                 )
     
+    @observe(as_type="tool") if LANGFUSE_AVAILABLE else lambda func: func
     def _intelligent_reconsolidate(
         self,
         query: str,
@@ -396,6 +460,20 @@ class Memory:
             message_history: Full message history
             final_reply: The assistant's final reply
         """
+        # Update Langfuse trace if available
+        if LANGFUSE_AVAILABLE and self._langfuse_client:
+            try:
+                get_client().update_current_trace(
+                    session_id=f"recon_{query}_{int(time.time())}",
+                    tags=["intelligent_reconsolidation", "memory_usage"],
+                    metadata={
+                        "operation": "intelligent_reconsolidation",
+                        "retrieved_count": len(retrieved_memories),
+                        "episodic_count": len([m for m in retrieved_memories if m.memory_type == "episodic"])
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update Langfuse trace: {e}")
         # 1. Separate episodic and semantic memories
         episodic_memories = [mem for mem in retrieved_memories if mem.memory_type == "episodic"]
         semantic_memories = [mem for mem in retrieved_memories if mem.memory_type == "semantic"]
@@ -618,6 +696,7 @@ class Memory:
     
 
 
+    @observe(as_type="generation") if LANGFUSE_AVAILABLE else lambda func: func
     def consolidate(self, user_id: Optional[str] = None) -> ConsolidationStats:
         """Run consolidation process for memories.
         
@@ -632,6 +711,17 @@ class Memory:
             
         Requirements: 6.1, 6.6
         """
+        # Update Langfuse trace if available
+        if LANGFUSE_AVAILABLE and self._langfuse_client:
+            try:
+                get_client().update_current_trace(
+                    session_id=f"consolidate_{user_id or 'all'}_{int(time.time())}",
+                    user_id=user_id,
+                    tags=["consolidation", "semantic_extraction"],
+                    metadata={"operation": "batch_consolidation"}
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update Langfuse trace: {e}")
         stats = ConsolidationStats()
         
         # 1. Query episodic memories to process

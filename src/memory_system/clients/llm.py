@@ -9,6 +9,13 @@ from openai import OpenAI
 
 from ..exceptions import OpenRouterError
 
+# Langfuse imports for monitoring
+try:
+    from langfuse import observe, get_client
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,11 +55,12 @@ class LLMClient:
         self._max_retries = 3
         self._base_delay = 1.0
     
+    @observe(as_type="generation") if LANGFUSE_AVAILABLE else lambda func: func
     def chat(self, system_prompt: str, user_message: str) -> str:
         """Call LLM for text response.
         
         Args:
-            system_prompt: System prompt for the LLM
+            system_prompt: System prompt for LLM
             user_message: User message to process
             
         Returns:
@@ -61,6 +69,18 @@ class LLMClient:
         Raises:
             OpenRouterError: If API call fails after retries
         """
+        # Update Langfuse trace if available
+        if LANGFUSE_AVAILABLE:
+            try:
+                get_client().update_current_trace(
+                    tags=["llm_call", "generation"],
+                    metadata={
+                        "client": "LLMClient",
+                        "prompt_length": len(system_prompt) + len(user_message)
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update Langfuse trace: {e}")
         try:
             return self._chat_with_retries(
                 client=self._client,
@@ -91,11 +111,12 @@ class LLMClient:
                     fallback_error.last_error,
                 ) from fallback_error
     
+    @observe(as_type="generation") if LANGFUSE_AVAILABLE else lambda func: func
     def chat_stream(self, system_prompt: str, user_message: str):
         """Call LLM for streaming text response.
         
         Args:
-            system_prompt: System prompt for the LLM
+            system_prompt: System prompt for LLM
             user_message: User message to process
             
         Yields:
@@ -104,6 +125,18 @@ class LLMClient:
         Raises:
             OpenRouterError: If API call fails after retries
         """
+        # Update Langfuse trace if available
+        if LANGFUSE_AVAILABLE:
+            try:
+                get_client().update_current_trace(
+                    tags=["llm_call", "streaming", "generation"],
+                    metadata={
+                        "client": "LLMClient",
+                        "streaming": True
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update Langfuse trace: {e}")
         try:
             yield from self._chat_stream_with_retries(
                 client=self._client,
