@@ -50,3 +50,8 @@ class MemoryConfig:
     # Retrieval configuration
     k_semantic: int = 5
     k_episodic: int = 5
+    
+    # Langfuse configuration
+    langfuse_secret_key: str = os.getenv("LANGFUSE_SECRET_KEY")
+    langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY")
+    langfuse_base_url: str = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")

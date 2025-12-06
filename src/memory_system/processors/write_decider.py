@@ -11,6 +11,13 @@ from typing import List, Dict, Any
 from prompts import EPISODIC_MEMORY_WRITE_FILTER
 from ..clients.llm import LLMClient
 
+# Langfuse imports for monitoring
+try:
+    from langfuse import observe, get_client
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,6 +61,7 @@ class EpisodicWriteDecider:
         self._llm = llm_client
         self._prompt = EPISODIC_MEMORY_WRITE_FILTER
 
+    @observe(as_type="tool") if LANGFUSE_AVAILABLE else lambda func: func
     def decide(self, chat_id: str, turns: List[Dict[str, str]]) -> WriteDecision:
         """Decide whether conversation turns should be stored as episodic memory.
         
@@ -64,6 +72,19 @@ class EpisodicWriteDecider:
         Returns:
             WriteDecision with write_episodic flag and records to write
         """
+        # Update Langfuse trace if available
+        if LANGFUSE_AVAILABLE:
+            try:
+                get_client().update_current_trace(
+                    session_id=f"write_decision_{chat_id}",
+                    tags=["write_decision", "episodic_filter"],
+                    metadata={
+                        "processor": "EpisodicWriteDecider",
+                        "turns_count": len(turns)
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update Langfuse trace: {e}")
         # Prepare input for LLM
         input_data = {
             "chat_id": chat_id,

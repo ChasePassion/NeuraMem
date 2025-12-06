@@ -24,6 +24,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.memory_system import Memory, MemoryConfig, MemoryRecord, ConsolidationStats
 
+# Langfuse imports for monitoring
+try:
+    from langfuse import observe, get_client
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+
 # Setup logger
 logger = logging.getLogger(__name__)
 
@@ -124,9 +131,26 @@ class MemoryDemoApp:
         except Exception as e:
             return f"❌ 获取记忆失败: {str(e)}"
 
+    @observe(as_type="agent") if LANGFUSE_AVAILABLE else lambda func: func
     async def chat(self, message: str, history: List[Any]) -> Tuple[str, List[Dict[str, str]], str]:
         """Process chat message with intelligent reconsolidation: search → respond → judge usage → reconsolidate used memories."""
         history_messages = self._normalize_history(history)
+        
+        # Update Langfuse trace if available
+        if LANGFUSE_AVAILABLE:
+            try:
+                get_client().update_current_trace(
+                    session_id=f"demo_chat_{self.current_user_id}_{int(time.time())}",
+                    user_id=self.current_user_id,
+                    tags=["demo_chat", "memory_system"],
+                    metadata={
+                        "app": "MemoryDemoApp",
+                        "message_length": len(message),
+                        "history_length": len(history_messages)
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update Langfuse trace: {e}")
         
         if not self.memory:
             return "", history_messages + [
