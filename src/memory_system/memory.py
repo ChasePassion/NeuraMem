@@ -314,13 +314,21 @@ class Memory:
         
         query_vector = query_vectors[0]
         
-        # Search semantic memories
-        semantic_filter = f'user_id == "{user_id}" and memory_type == "semantic"'
-        semantic_results = self._store.search(
-            vectors=[query_vector],
-            filter_expr=semantic_filter,
-            limit=self._config.k_semantic
-        )
+        # 根据配置选择不同的语义记忆获取方式
+        if self._config.use_all_semantic:
+            # 直接查询所有语义记忆，跳过向量检索
+            semantic_filter = f'user_id == "{user_id}" and memory_type == "semantic"'
+            semantic_records = self._store.query(filter_expr=semantic_filter, limit=1000)
+            # 转换为search()的格式：将query结果包装成search结果的格式
+            semantic_results = [semantic_records] if semantic_records else []
+        else:
+            # 使用向量检索获取前k条最相关的语义记忆
+            semantic_filter = f'user_id == "{user_id}" and memory_type == "semantic"'
+            semantic_results = self._store.search(
+                vectors=[query_vector],
+                filter_expr=semantic_filter,
+                limit=self._config.k_semantic
+            )
         
         # Search episodic memories
         episodic_filter = f'user_id == "{user_id}" and memory_type == "episodic"'
@@ -336,6 +344,9 @@ class Memory:
         # Process semantic results
         if semantic_results and semantic_results[0]:
             for hit in semantic_results[0]:
+                # 为query()返回的结果添加默认distance值
+                if "distance" not in hit:
+                    hit["distance"] = 0.0  # 非向量检索的结果设置默认距离
                 record = self._hit_to_memory_record(hit)
                 all_results.append(record)
         

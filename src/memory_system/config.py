@@ -48,8 +48,9 @@ class MemoryConfig:
     embedding_dim: int = 2560
     
     # Retrieval configuration
-    k_semantic: int = 5
-    k_episodic: int = 5
+    k_semantic: int = field(default_factory=lambda: int(os.getenv("K_SEMANTIC", "5")))
+    k_episodic: int = field(default_factory=lambda: int(os.getenv("K_EPISODIC", "5")))
+    use_all_semantic: bool = field(default_factory=lambda: os.getenv("USE_ALL_SEMANTIC", "true").lower() == "true")
     
     # Langfuse configuration
     langfuse_secret_key: str = os.getenv("LANGFUSE_SECRET_KEY")
