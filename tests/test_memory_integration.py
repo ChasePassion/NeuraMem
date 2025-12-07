@@ -41,7 +41,7 @@ async def test_memory_integration():
         query = "我叫什么名字？"
         
         # 检索相关记忆
-        memories = memory.search(query, user_id, 5, False)
+        memories = memory.search(query, user_id, 5)
         print(f"🔍 检索到 {len(memories)} 条相关记忆")
         
         # 构建上下文
@@ -67,24 +67,7 @@ async def test_memory_integration():
         else:
             print("⚠️ AI可能没有正确使用记忆信息")
         
-        # 4. 测试智能巩固功能
-        print("\n3️⃣ 测试智能巩固功能...")
-        try:
-            # 模拟智能巩固过程
-            system_prompt = memory._get_system_prompt()
-            await asyncio.to_thread(
-                memory._intelligent_reconsolidate,
-                query,
-                memories,
-                system_prompt,
-                [{"role": "user", "content": query}],
-                full_response
-            )
-            print("✅ 智能巩固测试成功")
-        except Exception as e:
-            print(f"⚠️ 智能巩固测试失败: {e}")
-        
-        # 5. 验证记忆持久化
+        # 4. 验证记忆持久化
         print("\n4️⃣ 验证记忆持久化...")
         all_memories = memory._store.query(
             filter_expr=f'user_id == "{user_id}"',

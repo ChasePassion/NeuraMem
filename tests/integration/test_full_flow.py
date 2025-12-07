@@ -39,30 +39,36 @@ class TestAddSearchReconsolidateFlow:
     """
 
     def test_add_search_reconsolidate_complete_flow(self, memory_system):
-        """Test the complete flow: add memory, search, and reconsolidate.
+        """Test complete flow: manage memory, search, and reconsolidate.
         
         This test verifies:
-        1. Memory can be added via add() method
+        1. Memory can be added via manage() method
         2. Memory can be retrieved via search()
-        3. Reconsolidation updates the memory with new context
+        3. Reconsolidation updates memory with new context
         
         Updated for v2 schema (simplified, no hit_count or metadata fields).
         """
         user_id = f"integ_user_{uuid.uuid4().hex[:8]}"
         chat_id = f"chat_{uuid.uuid4().hex[:8]}"
         
-        # Step 1: Add a memory with meaningful content
-        text = "I am a PhD student studying machine learning at Stanford University"
-        ids = memory_system.add(text=text, user_id=user_id, chat_id=chat_id)
+        # Step 1: Add a memory with meaningful content using manage method
+        user_text = "I am a PhD student studying machine learning at Stanford University"
+        assistant_text = "That's great! I'll remember that you're a PhD student at Stanford studying machine learning."
+        ids = memory_system.manage(
+            user_text=user_text,
+            assistant_text=assistant_text,
+            user_id=user_id,
+            chat_id=chat_id
+        )
         
-        # If write decider rejected, create memory directly for testing (v2 schema)
+        # If memory manager rejected, create memory directly for testing (v2 schema)
         if not ids:
             record = {
                 "user_id": user_id,
                 "memory_type": "episodic",
                 "ts": int(time.time()),
                 "chat_id": chat_id,
-                "text": text,
+                "text": user_text,
                 "vector": [0.1] * 2560,
             }
             ids = memory_system.store.insert([record])
@@ -76,8 +82,7 @@ class TestAddSearchReconsolidateFlow:
         results = memory_system.search(
             query="machine learning PhD student",
             user_id=user_id,
-            limit=10,
-            reconsolidate=True
+            limit=10
         )
         
         assert len(results) > 0, "Should find at least one memory"
@@ -141,8 +146,7 @@ class TestAddSearchReconsolidateFlow:
         results = memory_system.search(
             query="deep learning",
             user_id=user_id,
-            limit=10,
-            reconsolidate=False
+            limit=10
         )
         
         # Verify both types are returned
@@ -312,11 +316,12 @@ class TestCRUDOperations:
         
         ids = memory_system.store.insert([record])
         memory_id = ids[0]
-        time.sleep(0.3)
+        time.sleep(1.0)  # Increased wait time for consistency
         
         # Verify memory exists
         before_count = memory_system.store.count(filter_expr=f'user_id == "{user_id}"')
-        assert before_count == 1, "Should have 1 memory before delete"
+        print(f"Debug: before_count = {before_count}, user_id = {user_id}")
+        assert before_count == 1, f"Should have 1 memory before delete, got {before_count}"
         
         # Delete the memory
         success = memory_system.delete(memory_id)
@@ -350,11 +355,12 @@ class TestCRUDOperations:
             records.append(record)
         
         memory_system.store.insert(records)
-        time.sleep(0.3)
+        time.sleep(1.0)  # Increased wait time for consistency
         
         # Verify memories exist
         before_count = memory_system.store.count(filter_expr=f'user_id == "{user_id}"')
-        assert before_count == 3, "Should have 3 memories before reset"
+        print(f"Debug: before_count = {before_count}, user_id = {user_id}")
+        assert before_count == 3, f"Should have 3 memories before reset, got {before_count}"
         
         # Reset
         deleted_count = memory_system.reset(user_id)
