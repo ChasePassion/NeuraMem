@@ -149,7 +149,7 @@ class Memory:
         """
         return f"chat_{user_id}_{chat_id}"
 
-    @observe(as_type="agent")
+    @observe(as_type="agent", name="memory_manage_operation")
     def manage(
         self,
         user_text: str,
@@ -232,6 +232,27 @@ class Memory:
                 entities.append(entity)
             
             added_ids = self._store.insert(entities)
+        
+        # 记录最终的操作结果到Langfuse
+        operation_summary = {
+            "added_count": len(added_ids),
+            "updated_count": len([op for op in result.operations if op.operation_type == 'update']),
+            "deleted_count": len([op for op in result.operations if op.operation_type == 'delete']),
+            "total_operations": len(result.operations),
+            "decision_trace_available": True
+        }
+        
+        get_client().update_current_trace(
+            output={
+                "operation_summary": operation_summary,
+                "added_memory_ids": added_ids,
+                "execution_success": True
+            },
+            metadata={
+                "episodic_memories_processed": len(episodic_memories),
+                "final_operation_counts": operation_summary
+            }
+        )
         
         logger.info(
             f"Memory operation 'manage': type=episodic, user_id={user_id}, "
