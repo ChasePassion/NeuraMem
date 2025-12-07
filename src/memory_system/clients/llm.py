@@ -165,19 +165,36 @@ class LLMClient:
             default: Default value to return if JSON parsing fails
             
         Returns:
-            Parsed JSON response or default value
+            Dict containing:
+            - parsed_data: Parsed JSON response or default value
+            - raw_response: Original response text from LLM
+            - model: Model used for the request
+            - success: Whether parsing was successful
         """
         if default is None:
             default = {}
         
         try:
             response_text = self.chat(system_prompt, user_message)
-            return self._safe_parse_json(response_text, default)
+            parsed_data = self._safe_parse_json(response_text, default)
+            
+            return {
+                "parsed_data": parsed_data,
+                "raw_response": response_text,
+                "model": self._model,
+                "success": True
+            }
         except OpenRouterError:
             raise
         except Exception as e:
             logger.error(f"Unexpected error in chat_json: {e}")
-            return default
+            return {
+                "parsed_data": default,
+                "raw_response": "",
+                "model": self._model,
+                "success": False,
+                "error": str(e)
+            }
     
     def _safe_parse_json(
         self,

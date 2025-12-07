@@ -56,7 +56,7 @@ class EpisodicMemoryManager:
         self._llm = llm_client
         self._prompt = EPISODIC_MEMORY_MANAGER
     
-    @observe(as_type="chain")
+    @observe(as_type="chain", name="episodic_memory_management")
     def manage_memories(
         self, 
         user_text: str, 
@@ -96,11 +96,14 @@ class EpisodicMemoryManager:
                                 for mem in episodic_memories]
         }
         
-        response = self._llm.chat_json(
+        llm_response = self._llm.chat_json(
             system_prompt=self._prompt,
             user_message=json.dumps(input_data, ensure_ascii=False),
             default={"add": [], "update": [], "delete": []}
         )
+        
+        # 提取解析后的数据
+        response = llm_response["parsed_data"]
         
         # 转换为操作列表
         operations = []
@@ -130,8 +133,13 @@ class EpisodicMemoryManager:
             "delete": len([op for op in operations if op.operation_type == "delete"])
         }
         
+        # 记录完整的LLM输出信息到Langfuse
         get_client().update_current_trace(
             output={
+                "llm_raw_output": llm_response["raw_response"],
+                "llm_parsed_output": response,
+                "llm_model": llm_response["model"],
+                "llm_success": llm_response["success"],
                 "operations_count": len(operations),
                 "operation_counts": operation_counts,
                 "operations": [
@@ -146,7 +154,9 @@ class EpisodicMemoryManager:
             metadata={
                 "success": True,
                 "total_operations": len(operations),
-                "llm_response_keys": list(response.keys())
+                "llm_response_keys": list(response.keys()),
+                "llm_raw_response_length": len(llm_response["raw_response"]),
+                "llm_parsing_success": llm_response["success"]
             }
         )
 
