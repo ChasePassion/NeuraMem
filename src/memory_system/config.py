@@ -53,6 +53,11 @@ class MemoryConfig:
     use_all_semantic: bool = field(default_factory=lambda: os.getenv("USE_ALL_SEMANTIC", "true").lower() == "true")
     
     # Langfuse configuration
-    langfuse_secret_key: str = os.getenv("LANGFUSE_SECRET_KEY")
-    langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY")
-    langfuse_base_url: str = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
+    # Langfuse configuration (support both LANGFUSE_BASE_URL and LANGFUSE_HOST)
+    langfuse_secret_key: str = field(default_factory=lambda: os.getenv("LANGFUSE_SECRET_KEY"))
+    langfuse_public_key: str = field(default_factory=lambda: os.getenv("LANGFUSE_PUBLIC_KEY"))
+    langfuse_base_url: str = field(
+        default_factory=lambda: os.getenv("LANGFUSE_BASE_URL")
+        or os.getenv("LANGFUSE_HOST")
+        or "https://cloud.langfuse.com"
+    )

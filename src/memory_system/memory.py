@@ -9,23 +9,14 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
-
+from langfuse import observe, get_client
 from .config import MemoryConfig
 from .clients import EmbeddingClient, LLMClient, MilvusStore
 from .processors import (
-    EpisodicWriteDecider,
+    EpisodicMemoryManager,
     SemanticWriter,
-    EpisodicReconsolidator,
     MemoryUsageJudge,
 )
-
-# Langfuse imports for monitoring
-try:
-    from langfuse import observe, get_client
-    LANGFUSE_AVAILABLE = True
-except ImportError:
-    LANGFUSE_AVAILABLE = False
-    logging.warning("Langfuse not available - monitoring disabled")
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +74,8 @@ class Memory:
         self._store = self._create_milvus_store()
         
         # Initialize processor modules
-        self._write_decider = EpisodicWriteDecider(self._llm_client)
+        self._memory_manager = EpisodicMemoryManager(self._llm_client)
         self._semantic_writer = SemanticWriter(self._llm_client)
-        self._reconsolidator = EpisodicReconsolidator(self._llm_client)
         self._memory_usage_judge = MemoryUsageJudge(self._llm_client)
         
         # Create collection if not exists
@@ -93,6 +83,8 @@ class Memory:
         
         # Initialize Langfuse client if available
         self._langfuse_client = self._create_langfuse_client()
+        # Cache availability flag to avoid global lookups in threads
+        self._langfuse_available = bool(globals().get("LANGFUSE_AVAILABLE", False))
         
         logger.info(
             f"Memory system initialized with collection '{self._config.collection_name}'"
@@ -123,189 +115,247 @@ class Memory:
     
     def _create_langfuse_client(self):
         """Create Langfuse client if configuration is available."""
-        if not LANGFUSE_AVAILABLE:
-            return None
-            
-        if (self._config.langfuse_secret_key and 
-            self._config.langfuse_public_key):
-            try:
-                from langfuse import Langfuse
-                return Langfuse(
-                    secret_key=self._config.langfuse_secret_key,
-                    public_key=self._config.langfuse_public_key,
-                    host=self._config.langfuse_base_url
-                )
-            except Exception as e:
-                logger.warning(f"Failed to create Langfuse client: {e}")
-                return None
-        return None
 
-    @observe(as_type="agent") if LANGFUSE_AVAILABLE else lambda func: func
-    def add(
+        secret_key = self._config.langfuse_secret_key
+        public_key = self._config.langfuse_public_key
+        host = self._config.langfuse_base_url
+
+        if not (secret_key and public_key):
+            logger.info("Langfuse keys not configured; skipping Langfuse client initialization")
+            return None
+
+        try:
+            from langfuse import Langfuse
+            client = Langfuse(
+                secret_key=secret_key,
+                public_key=public_key,
+                host=host
+            )
+            logger.info(f"Langfuse client initialized with host '{host}'")
+            return client
+        except Exception as e:
+            logger.warning(f"Failed to create Langfuse client: {e}")
+            return None
+    
+    def _generate_session_id(self, user_id: str, chat_id: str) -> str:
+        """Generate consistent session ID for Langfuse tracking.
+        
+        Args:
+            user_id: User identifier
+            chat_id: Chat identifier
+            
+        Returns:
+            Consistent session ID string
+        """
+        return f"chat_{user_id}_{chat_id}"
+
+    @observe(as_type="agent")
+    def manage(
         self,
-        text: str,
+        user_text: str,
+        assistant_text: str,
         user_id: str,
         chat_id: str,
         metadata: Optional[Dict[str, Any]] = None
     ) -> List[int]:
-        """Add memories from conversation text.
+        """Manage memories with CRUD operations based on conversation.
         
-        Processes text through EpisodicWriteDecider to determine if it should
-        be stored as episodic memory. All information is integrated into the
-        text field for unified vector search.
+        Processes conversation through EpisodicMemoryManager to determine
+        add, update, or delete operations on episodic memories.
         
         Args:
-            text: Conversation text to process
+            user_text: User input text
+            assistant_text: Assistant response text
             user_id: User identifier
             chat_id: Conversation/thread identifier
             metadata: Optional additional metadata (ignored in v2 schema)
             
         Returns:
-            List of created memory IDs
+            List of newly added memory IDs
             
         Requirements: 2.1, 2.2, 2.3, 8.1
         """
-        # Update Langfuse trace if available
-        if LANGFUSE_AVAILABLE and self._langfuse_client:
-            try:
-                get_client().update_current_trace(
-                    session_id=f"chat_{user_id}_{chat_id}",
-                    user_id=user_id,
-                    tags=["memory_add", "episodic"],
-                    metadata={
-                        "operation": "add_memory",
-                        "chat_id": chat_id,
-                        "text_length": len(text)
-                    }
-                )
-            except Exception as e:
-                logger.warning(f"Failed to update Langfuse trace: {e}")
-        # Prepare conversation turns for write decider
-        turns = [{"role": "user", "content": text}]
-        
-        # Call EpisodicWriteDecider to determine if content should be stored
-        decision = self._write_decider.decide(chat_id, turns)
-        
-        if not decision.write_episodic or not decision.records:
-            logger.info(f"No episodic memory to write for user={user_id}, chat={chat_id}")
-            return []
-        
-        # Generate embeddings for qualifying records
-        texts_to_embed = [record.text for record in decision.records]
-        embeddings = self._embedding_client.encode(texts_to_embed)
-        
-        # Prepare entities for insertion (simplified v2 schema)
-        current_ts = int(time.time())
-        entities = []
-        
-        for i, record in enumerate(decision.records):
-            # In v2 schema, all information is in the text field
-            entity = {
-                "user_id": user_id,
-                "memory_type": "episodic",
-                "ts": current_ts,
+        get_client().update_current_trace(
+            session_id=self._generate_session_id(user_id, chat_id),
+            user_id=user_id,
+            tags=["memory_manage", "episodic"],
+            metadata={
+                "operation": "manage_memory",
                 "chat_id": chat_id,
-                "text": record.text,
-                "vector": embeddings[i],
+                "user_text_length": len(user_text),
+                "assistant_text_length": len(assistant_text)
             }
-            entities.append(entity)
-        
-        # Insert into Milvus
-        ids = self._store.insert(entities)
-        
-        logger.info(
-            f"Memory operation 'add': type=episodic, user_id={user_id}, "
-            f"chat_id={chat_id}, affected_count={len(ids)}"
         )
         
-        return ids
+        # 1. Query user all episodic memories (不限制数量)
+        episodic_filter = f'user_id == "{user_id}" and memory_type == "episodic"'
+        episodic_memories = self._store.query(filter_expr=episodic_filter, limit=10000)
+        
+        # 2. 调用记忆管理器
+        result = self._memory_manager.manage_memories(
+            user_text=user_text,
+            assistant_text=assistant_text,
+            episodic_memories=episodic_memories
+        )
+        
+        # 3. 执行CRUD操作
+        added_ids = []
+        
+        # 处理删除操作
+        for op in result.operations:
+            if op.operation_type == "delete":
+                self.delete(op.memory_id)
+        
+        # 处理更新操作
+        for op in result.operations:
+            if op.operation_type == "update":
+                self.update(op.memory_id, {"text": op.text})
+        
+        # 处理添加操作
+        add_operations = [op for op in result.operations if op.operation_type == "add"]
+        if add_operations:
+            add_texts = [op.text for op in add_operations]
+            embeddings = self._embedding_client.encode(add_texts)
+            
+            current_ts = int(time.time())
+            entities = []
+            
+            for i, text in enumerate(add_texts):
+                entity = {
+                    "user_id": user_id,
+                    "memory_type": "episodic",
+                    "ts": current_ts,
+                    "chat_id": chat_id,
+                    "text": text,
+                    "vector": embeddings[i],
+                }
+                entities.append(entity)
+            
+            added_ids = self._store.insert(entities)
+        
+        logger.info(
+            f"Memory operation 'manage': type=episodic, user_id={user_id}, "
+            f"chat_id={chat_id}, added={len(added_ids)}, "
+            f"updated={len([op for op in result.operations if op.operation_type == 'update'])}, "
+            f"deleted={len([op for op in result.operations if op.operation_type == 'delete'])}"
+        )
+        
+        return added_ids
 
-    async def add_async(
+    @observe(as_type="agent")
+    async def manage_async(
         self,
-        text: str,
+        user_text: str,
+        assistant_text: str,
         user_id: str,
         chat_id: str,
         metadata: Optional[Dict[str, Any]] = None
     ) -> List[int]:
-        """Async variant of add that offloads blocking steps to a thread pool."""
-        turns = [{"role": "user", "content": text}]
-
-        # Decide whether to write episodic memory (LLM call in background thread)
-        decision = await asyncio.to_thread(self._write_decider.decide, chat_id, turns)
-
-        if not decision.write_episodic or not decision.records:
-            logger.info(f"No episodic memory to write for user={user_id}, chat={chat_id}")
-            return []
-
-        texts_to_embed = [record.text for record in decision.records]
-
-        # Embedding + Milvus insert are synchronous; run them in threads to avoid blocking event loop
-        embeddings = await asyncio.to_thread(self._embedding_client.encode, texts_to_embed)
-
-        current_ts = int(time.time())
-        entities = []
-
-        for i, record in enumerate(decision.records):
-            entity = {
-                "user_id": user_id,
-                "memory_type": "episodic",
-                "ts": current_ts,
+        """Async variant of manage that offloads blocking steps to a thread pool."""
+        get_client().update_current_trace(
+            session_id=self._generate_session_id(user_id, chat_id),
+            user_id=user_id,
+            tags=["memory_manage_async", "episodic"],
+            metadata={
+                "operation": "manage_memory_async",
                 "chat_id": chat_id,
-                "text": record.text,
-                "vector": embeddings[i],
+                "user_text_length": len(user_text),
+                "assistant_text_length": len(assistant_text)
             }
-            entities.append(entity)
-
-        ids = await asyncio.to_thread(self._store.insert, entities)
-
-        logger.info(
-            f"Memory operation 'add_async': type=episodic, user_id={user_id}, "
-            f"chat_id={chat_id}, affected_count={len(ids)}"
         )
 
-        return ids
+        # Query user all episodic memories (不限制数量)
+        episodic_filter = f'user_id == "{user_id}" and memory_type == "episodic"'
+        episodic_memories = await asyncio.to_thread(
+            self._store.query, filter_expr=episodic_filter, limit=10000
+        )
+        
+        # 调用记忆管理器 (LLM call in background thread)
+        result = await asyncio.to_thread(
+            self._memory_manager.manage_memories,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            episodic_memories=episodic_memories
+        )
+        
+        # 执行CRUD操作
+        added_ids = []
+        
+        # 处理删除操作
+        for op in result.operations:
+            if op.operation_type == "delete":
+                await asyncio.to_thread(self.delete, op.memory_id)
+        
+        # 处理更新操作
+        for op in result.operations:
+            if op.operation_type == "update":
+                await asyncio.to_thread(self.update, op.memory_id, {"text": op.text})
+        
+        # 处理添加操作
+        add_operations = [op for op in result.operations if op.operation_type == "add"]
+        if add_operations:
+            add_texts = [op.text for op in add_operations]
+            
+            # Embedding + Milvus insert are synchronous; run them in threads to avoid blocking event loop
+            embeddings = await asyncio.to_thread(self._embedding_client.encode, add_texts)
+            
+            current_ts = int(time.time())
+            entities = []
+            
+            for i, text in enumerate(add_texts):
+                entity = {
+                    "user_id": user_id,
+                    "memory_type": "episodic",
+                    "ts": current_ts,
+                    "chat_id": chat_id,
+                    "text": text,
+                    "vector": embeddings[i],
+                }
+                entities.append(entity)
+            
+            added_ids = await asyncio.to_thread(self._store.insert, entities)
 
-    @observe(as_type="agent") if LANGFUSE_AVAILABLE else lambda func: func
+        logger.info(
+            f"Memory operation 'manage_async': type=episodic, user_id={user_id}, "
+            f"chat_id={chat_id}, added={len(added_ids)}, "
+            f"updated={len([op for op in result.operations if op.operation_type == 'update'])}, "
+            f"deleted={len([op for op in result.operations if op.operation_type == 'delete'])}"
+        )
+
+        return added_ids
+
+    @observe(as_type="agent")
     def search(
         self,
         query: str,
         user_id: str,
-        limit: int = 10,
-        reconsolidate: bool = True
+        limit: int = 10
     ) -> List[MemoryRecord]:
         """Search memories for a user.
         
         Retrieves both episodic and semantic memories, ranks them by
-        similarity, type, and time decay. Optionally reconsolidates
-        episodic memories with the current query context.
+        similarity, type, and time decay.
         
         Args:
             query: Search query text
             user_id: User identifier
             limit: Maximum total results to return
-            reconsolidate: Whether to reconsolidate episodic memories (default True)
             
         Returns:
             Ranked list of MemoryRecord objects
             
-        Requirements: 3.1, 3.2, 3.3, 3.4, 4.1, 4.5
+        Requirements: 3.1, 3.2, 3.3, 3.4
         """
-        # Update Langfuse trace if available
-        if LANGFUSE_AVAILABLE and self._langfuse_client:
-            try:
-                get_client().update_current_trace(
-                    session_id=f"search_{user_id}_{int(time.time())}",
-                    user_id=user_id,
-                    tags=["memory_search", "retrieval"],
-                    metadata={
-                        "operation": "search_memory",
-                        "query_length": len(query),
-                        "limit": limit,
-                        "reconsolidate": reconsolidate
-                    }
-                )
-            except Exception as e:
-                logger.warning(f"Failed to update Langfuse trace: {e}")
+        get_client().update_current_trace(
+            session_id=f"search_{user_id}_{int(time.time())}",
+            user_id=user_id,
+            tags=["memory_search", "retrieval"],
+            metadata={
+                "operation": "search_memory",
+                "query_length": len(query),
+                "limit": limit
+            }
+        )
         # Generate embedding for query
         query_vectors = self._embedding_client.encode([query])
         
@@ -350,23 +400,17 @@ class Memory:
                 record = self._hit_to_memory_record(hit)
                 all_results.append(record)
         
-        # Process episodic results and collect for reconsolidation
-        episodic_hits = []
+        # Process episodic results
         if episodic_results and episodic_results[0]:
             for hit in episodic_results[0]:
                 record = self._hit_to_memory_record(hit)
                 all_results.append(record)
-                episodic_hits.append(hit)
         
         # Rank results by similarity, type, and time decay
         ranked_results = self._rank_results(all_results)
         
         # Limit total results
         ranked_results = ranked_results[:limit]
-        
-        # Reconsolidate episodic memories with current context (Requirements 4.1, 4.5)
-        if reconsolidate and episodic_hits:
-            self._reconsolidate_episodic_memories(episodic_hits, query)
         
         # Count by type for logging
         semantic_count = sum(1 for r in ranked_results if r.memory_type == "semantic")
@@ -380,207 +424,6 @@ class Memory:
         
         return ranked_results
 
-    async def reconsolidate_async(
-        self,
-        query: str,
-        user_id: str,
-        limit: int = 10
-    ) -> List[MemoryRecord]:
-        """Async helper to reconsolidate episodic memories without blocking event loop."""
-        return await asyncio.to_thread(self.search, query, user_id, limit, True)
-    
-    def _reconsolidate_episodic_memories(
-        self,
-        episodic_hits: List[Dict[str, Any]],
-        current_context: str
-    ) -> None:
-        """Reconsolidate episodic memories with current context.
-        
-        After search returns results, identifies used episodic memories,
-        calls EpisodicReconsolidator with current context, updates memory
-        records with reconsolidated content, and regenerates embeddings.
-        
-        In v2 schema, all information is stored in the text field.
-        
-        Args:
-            episodic_hits: List of episodic memory hits from search
-            current_context: Current query/context text
-            
-        Requirements: 4.1, 4.5
-        """
-        for hit in episodic_hits:
-            memory_id = hit.get("id")
-            if memory_id is None:
-                continue
-            
-            try:
-                # Call EpisodicReconsolidator with old memory and current context
-                updated_memory = self._reconsolidator.reconsolidate(
-                    old_memory=hit,
-                    current_context=current_context
-                )
-                
-                if not updated_memory:
-                    continue
-                
-                # Check if text was changed (Requirement 4.5)
-                old_text = hit.get("text", "")
-                new_text = updated_memory.get("text", "")
-                
-                # Prepare update data (v2 schema: only text and vector)
-                update_data = {}
-                
-                # Update text if changed
-                if new_text and new_text != old_text:
-                    update_data["text"] = new_text
-                    # Regenerate embedding for new text
-                    embeddings = self._embedding_client.encode([new_text])
-                    if embeddings:
-                        update_data["vector"] = embeddings[0]
-                
-                # Apply updates to Milvus if there are changes
-                if update_data:
-                    self._store.update(memory_id, update_data, base_record=hit)
-                    logger.debug(
-                        f"Reconsolidated memory {memory_id} with context"
-                    )
-                    
-            except Exception as e:
-                logger.warning(
-                    f"Failed to reconsolidate memory {memory_id}: {e}"
-                )
-    
-    @observe(as_type="tool") if LANGFUSE_AVAILABLE else lambda func: func
-    def _intelligent_reconsolidate(
-        self,
-        query: str,
-        retrieved_memories: List[MemoryRecord],
-        system_prompt: str,
-        message_history: List[Dict[str, str]],
-        final_reply: str
-    ) -> None:
-        """Intelligent reconsolidation based on actual memory usage.
-        
-        This method judges which episodic memories were actually used in generating
-        the final reply, and only reconsolidates those memories.
-        
-        Args:
-            query: The user's query
-            retrieved_memories: All memories that were retrieved
-            system_prompt: The system prompt used
-            message_history: Full message history
-            final_reply: The assistant's final reply
-        """
-        # Update Langfuse trace if available
-        if LANGFUSE_AVAILABLE and self._langfuse_client:
-            try:
-                get_client().update_current_trace(
-                    session_id=f"recon_{query}_{int(time.time())}",
-                    tags=["intelligent_reconsolidation", "memory_usage"],
-                    metadata={
-                        "operation": "intelligent_reconsolidation",
-                        "retrieved_count": len(retrieved_memories),
-                        "episodic_count": len([m for m in retrieved_memories if m.memory_type == "episodic"])
-                    }
-                )
-            except Exception as e:
-                logger.warning(f"Failed to update Langfuse trace: {e}")
-        # 1. Separate episodic and semantic memories
-        episodic_memories = [mem for mem in retrieved_memories if mem.memory_type == "episodic"]
-        semantic_memories = [mem for mem in retrieved_memories if mem.memory_type == "semantic"]
-        
-        if not episodic_memories:
-            return
-        
-        # 2. Prepare input data for judgment
-        episodic_texts = [mem.text for mem in episodic_memories]
-        semantic_texts = [mem.text for mem in semantic_memories]
-        
-        # 3. Judge which episodic memories were actually used
-        used_episodic_texts = self._memory_usage_judge.judge_used_memories(
-            system_prompt=system_prompt,
-            episodic_memories=episodic_texts,
-            semantic_memories=semantic_texts,
-            message_history=message_history,
-            final_reply=final_reply
-        )
-        
-        if not used_episodic_texts:
-            logger.info("No episodic memories were actually used, skipping reconsolidation")
-            return
-        
-        # 4. Convert used episodic memories to hits for reconsolidation
-        used_episodic_hits = []
-        for mem in episodic_memories:
-            if mem.text in used_episodic_texts:
-                # Convert MemoryRecord back to hit format
-                hit = self._memory_record_to_hit(mem)
-                used_episodic_hits.append(hit)
-        
-        # 5. Execute reconsolidation only for used memories
-        logger.info(f"Reconsolidating {len(used_episodic_hits)} actually used memories")
-        for hit in used_episodic_hits:
-            self._reconsolidate_single_memory(hit, query)
-    
-    def _memory_record_to_hit(self, record: MemoryRecord) -> Dict[str, Any]:
-        """Convert a MemoryRecord back to hit format for reconsolidation."""
-        return {
-            "id": record.id,
-            "user_id": record.user_id,
-            "memory_type": record.memory_type,
-            "ts": record.ts,
-            "chat_id": record.chat_id,
-            "text": record.text,
-            "distance": record.distance
-        }
-    
-    def _reconsolidate_single_memory(
-        self,
-        hit: Dict[str, Any],
-        current_context: str
-    ) -> None:
-        """Reconsolidate a single episodic memory.
-        
-        Args:
-            hit: Memory hit in dictionary format
-            current_context: Current query/context text
-        """
-        memory_id = hit.get("id")
-        if memory_id is None:
-            return
-        
-        try:
-            # Call EpisodicReconsolidator with old memory and current context
-            updated_memory = self._reconsolidator.reconsolidate(
-                old_memory=hit,
-                current_context=current_context
-            )
-            
-            if not updated_memory:
-                return
-            
-            # Check if text was changed
-            old_text = hit.get("text", "")
-            new_text = updated_memory.get("text", "")
-            
-            # Prepare update data (v2 schema: only text and vector)
-            update_data = {}
-            
-            # Update text if changed
-            if new_text and new_text != old_text:
-                update_data["text"] = new_text
-                # Regenerate embedding for new text
-                embeddings = self._embedding_client.encode([new_text])
-                if embeddings:
-                    update_data["vector"] = embeddings[0]
-            
-            # Apply updates to Milvus if there are changes
-            if update_data:
-                self._store.update(memory_id, update_data, base_record=hit)
-                logger.debug(f"Reconsolidated memory {memory_id} with context")
-                
-        except Exception as e:
-            logger.warning(f"Failed to reconsolidate memory {memory_id}: {e}")
     
     def _hit_to_memory_record(self, hit: Dict[str, Any]) -> MemoryRecord:
         """Convert a search hit to MemoryRecord (v2 schema)."""
@@ -707,7 +550,7 @@ class Memory:
     
 
 
-    @observe(as_type="generation") if LANGFUSE_AVAILABLE else lambda func: func
+    @observe(as_type="generation")
     def consolidate(self, user_id: Optional[str] = None) -> ConsolidationStats:
         """Run consolidation process for memories.
         
@@ -722,17 +565,12 @@ class Memory:
             
         Requirements: 6.1, 6.6
         """
-        # Update Langfuse trace if available
-        if LANGFUSE_AVAILABLE and self._langfuse_client:
-            try:
-                get_client().update_current_trace(
-                    session_id=f"consolidate_{user_id or 'all'}_{int(time.time())}",
-                    user_id=user_id,
-                    tags=["consolidation", "semantic_extraction"],
-                    metadata={"operation": "batch_consolidation"}
-                )
-            except Exception as e:
-                logger.warning(f"Failed to update Langfuse trace: {e}")
+        get_client().update_current_trace(
+            session_id=f"consolidate_{user_id or 'all'}_{int(time.time())}",
+            user_id=user_id,
+            tags=["consolidation", "semantic_extraction"],
+            metadata={"operation": "batch_consolidation"}
+        )
         stats = ConsolidationStats()
         
         # 1. Query episodic memories to process
