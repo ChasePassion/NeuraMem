@@ -349,23 +349,18 @@ class Memory:
     def search(
         self,
         query: str,
-        user_id: str,
-        limit: int = 10
-    ) -> List[MemoryRecord]:
+        user_id: str
+    ) -> Dict[str, List[MemoryRecord]]:
         """Search memories for a user.
         
-        Retrieves both episodic and semantic memories, ranks them by
-        similarity, type, and time decay.
+        Retrieves both episodic and semantic memories without ranking.
         
         Args:
             query: Search query text
             user_id: User identifier
-            limit: Maximum total results to return
             
         Returns:
-            Ranked list of MemoryRecord objects
-            
-        Requirements: 3.1, 3.2, 3.3, 3.4
+            Dict with separated episodic and semantic memories
         """
         get_client().update_current_trace(
             session_id=f"search_{user_id}_{int(time.time())}",
@@ -373,15 +368,14 @@ class Memory:
             tags=["memory_search", "retrieval"],
             metadata={
                 "operation": "search_memory",
-                "query_length": len(query),
-                "limit": limit
+                "query_length": len(query)
             }
         )
         # Generate embedding for query
         query_vectors = self._embedding_client.encode([query])
         
         if not query_vectors:
-            return []
+            return {"episodic": [], "semantic": []}
         
         query_vector = query_vectors[0]
         
@@ -390,8 +384,7 @@ class Memory:
             # 直接查询所有语义记忆，跳过向量检索
             semantic_filter = f'user_id == "{user_id}" and memory_type == "semantic"'
             semantic_records = self._store.query(filter_expr=semantic_filter, limit=1000)
-            # 转换为search()的格式：将query结果包装成search结果的格式
-            semantic_results = [semantic_records] if semantic_records else []
+            semantic_memories = [self._hit_to_memory_record(hit) for hit in semantic_records]
         else:
             # 使用向量检索获取前k条最相关的语义记忆
             semantic_filter = f'user_id == "{user_id}" and memory_type == "semantic"'
@@ -400,6 +393,9 @@ class Memory:
                 filter_expr=semantic_filter,
                 limit=self._config.k_semantic
             )
+            semantic_memories = []
+            if semantic_results and semantic_results[0]:
+                semantic_memories = [self._hit_to_memory_record(hit) for hit in semantic_results[0]]
         
         # Search episodic memories
         episodic_filter = f'user_id == "{user_id}" and memory_type == "episodic"'
@@ -408,42 +404,23 @@ class Memory:
             filter_expr=episodic_filter,
             limit=self._config.k_episodic
         )
-        
-        # Combine results
-        all_results = []
-        
-        # Process semantic results
-        if semantic_results and semantic_results[0]:
-            for hit in semantic_results[0]:
-                # 为query()返回的结果添加默认distance值
-                if "distance" not in hit:
-                    hit["distance"] = 0.0  # 非向量检索的结果设置默认距离
-                record = self._hit_to_memory_record(hit)
-                all_results.append(record)
-        
-        # Process episodic results
+        episodic_memories = []
         if episodic_results and episodic_results[0]:
-            for hit in episodic_results[0]:
-                record = self._hit_to_memory_record(hit)
-                all_results.append(record)
+            episodic_memories = [self._hit_to_memory_record(hit) for hit in episodic_results[0]]
         
-        # Rank results by similarity, type, and time decay
-        ranked_results = self._rank_results(all_results)
-        
-        # Limit total results
-        ranked_results = ranked_results[:limit]
+        # 直接返回分离的结果，不排序
+        result = {
+            "episodic": episodic_memories,
+            "semantic": semantic_memories
+        }
         
         # Count by type for logging
-        semantic_count = sum(1 for r in ranked_results if r.memory_type == "semantic")
-        episodic_count = sum(1 for r in ranked_results if r.memory_type == "episodic")
-        
         logger.info(
             f"Memory operation 'search': user_id={user_id}, "
-            f"total_results={len(ranked_results)}, semantic={semantic_count}, "
-            f"episodic={episodic_count}"
+            f"episodic_results={len(episodic_memories)}, semantic_results={len(semantic_memories)}"
         )
         
-        return ranked_results
+        return result
 
     
     def _hit_to_memory_record(self, hit: Dict[str, Any]) -> MemoryRecord:
@@ -458,32 +435,6 @@ class Memory:
             distance=hit.get("distance", 0.0)
         )
     
-    def _rank_results(self, results: List[MemoryRecord]) -> List[MemoryRecord]:
-        """Rank search results by multiple factors.
-        
-        Factors (v2 schema - simplified):
-        - Similarity score (distance, lower is better for COSINE)
-        - Memory type (semantic weighted higher)
-        - Time decay (recent episodic more important)
-        """
-        current_time = int(time.time())
-        
-        def score(record: MemoryRecord) -> float:
-            # Base score from similarity (1 - distance for COSINE)
-            similarity = 1.0 - record.distance
-            
-            # Type weight: semantic memories get a boost
-            type_weight = 1.2 if record.memory_type == "semantic" else 1.0
-            
-            # Time decay for episodic (recent is better)
-            time_weight = 1.0
-            if record.memory_type == "episodic" and record.ts > 0:
-                age_days = (current_time - record.ts) / 86400
-                time_weight = 1.0 / (1.0 + age_days * 0.1)  # Decay factor
-            
-            return similarity * type_weight * time_weight
-        
-        return sorted(results, key=score, reverse=True)
     
 
 

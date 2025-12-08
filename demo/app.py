@@ -151,8 +151,7 @@ class MemoryDemoApp:
             relevant_memories = await asyncio.to_thread(
                 self.memory.search,
                 message,
-                self.current_user_id,
-                5
+                self.current_user_id
             )
             
             # 3. 构建完整上下文（传入 history）
@@ -204,8 +203,7 @@ class MemoryDemoApp:
             relevant_memories = await asyncio.to_thread(
                 self.memory.search,
                 message,
-                self.current_user_id,
-                5
+                self.current_user_id
             )
             
             # 3. 构建完整上下文（传入 history）
@@ -288,17 +286,14 @@ class MemoryDemoApp:
         return messages
     
     
-    def _build_context_with_memories(self, message: str, memories: List[MemoryRecord], history: List[Dict[str, str]]) -> str:
+    def _build_context_with_memories(self, message: str, memories: Dict[str, List[MemoryRecord]], history: List[Dict[str, str]]) -> str:
         """构建包含记忆的完整上下文。"""
         context_parts = []
-        
-        # 分离情景记忆和语义记忆
-        episodic_memories = [mem for mem in memories if mem.memory_type == "episodic"]
-        semantic_memories = [mem for mem in memories if mem.memory_type == "semantic"]
         history_pairs = self._history_pairs(history)
         
         # 1. 情景记忆部分
         context_parts.append("Here are the episodic memories:")
+        episodic_memories = memories.get("episodic", [])
         if episodic_memories:
             for i, mem in enumerate(episodic_memories[:3], 1):
                 context_parts.append(f"{i}. {mem.text}")
@@ -308,6 +303,7 @@ class MemoryDemoApp:
         
         # 2. 语义记忆部分
         context_parts.append("Here are the semantic memories:")
+        semantic_memories = memories.get("semantic", [])
         if semantic_memories:
             for i, mem in enumerate(semantic_memories[:3], 1):
                 context_parts.append(f"{i}. {mem.text}")
