@@ -518,6 +518,7 @@ class Memory:
             distance=hit.get("distance", 0.0)
         )
     
+    @observe(as_type="agent", name="memory_assign_to_narrative_group")
     def assign_to_narrative_group(self, memory_ids: List[int], user_id: str) -> Dict[int, int]:
         """将被使用的情景记忆分配到叙事组。
         
@@ -528,7 +529,33 @@ class Memory:
         Returns:
             Dict[int, int] - memory_id到group_id的映射
         """
-        return self._narrative_manager.assign_to_narrative_group(memory_ids, user_id)
+        session_id = f"narrative_assign_{user_id}_{int(time.time())}"
+        get_client().update_current_trace(
+            session_id=session_id,
+            user_id=user_id,
+            tags=["narrative_memory", "group_assignment"],
+            metadata={
+                "memory_ids": memory_ids,
+                "memory_ids_count": len(memory_ids)
+            }
+        )
+
+        assignments = self._narrative_manager.assign_to_narrative_group(memory_ids, user_id)
+
+        get_client().update_current_trace(
+            session_id=session_id,
+            output={
+                "assigned_groups": assignments,
+                "requested_ids_count": len(memory_ids),
+                "assigned_ids_count": len(assignments),
+                "success": True
+            },
+            metadata={
+                "missing_ids": [mid for mid in memory_ids if mid not in assignments]
+            }
+        )
+
+        return assignments
     
     
 
