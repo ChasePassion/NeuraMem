@@ -61,3 +61,8 @@ class MemoryConfig:
         or os.getenv("LANGFUSE_HOST")
         or "https://cloud.langfuse.com"
     )
+    
+    # 叙事记忆配置
+    narrative_similarity_threshold: float = field(
+        default_factory=lambda: float(os.getenv("NARRATIVE_SIMILARITY_THRESHOLD", "0.8"))
+    )

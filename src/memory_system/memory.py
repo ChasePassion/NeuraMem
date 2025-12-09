@@ -9,6 +9,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
+import numpy as np
 from langfuse import observe, get_client
 from .config import MemoryConfig
 from .clients import EmbeddingClient, LLMClient, MilvusStore
@@ -16,9 +17,18 @@ from .processors import (
     EpisodicMemoryManager,
     SemanticWriter,
     MemoryUsageJudge,
+    NarrativeMemoryManager,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def normalize(vec) -> np.ndarray:
+    """向量归一化"""
+    norm = np.linalg.norm(vec)
+    if norm == 0:
+        return vec
+    return vec / norm
 
 
 @dataclass
@@ -77,6 +87,7 @@ class Memory:
         self._memory_manager = EpisodicMemoryManager(self._llm_client)
         self._semantic_writer = SemanticWriter(self._llm_client)
         self._memory_usage_judge = MemoryUsageJudge(self._llm_client)
+        self._narrative_manager = NarrativeMemoryManager(self._store, self._config)
         
         # Create collection if not exists
         self._store.create_collection(dim=self._config.embedding_dim)
@@ -204,12 +215,12 @@ class Memory:
         # 处理删除操作
         for op in result.operations:
             if op.operation_type == "delete":
-                self.delete(op.memory_id)
+                self.delete(op.memory_id, user_id)
         
         # 处理更新操作
         for op in result.operations:
             if op.operation_type == "update":
-                self.update(op.memory_id, {"text": op.text})
+                self.update(op.memory_id, {"text": op.text}, user_id)
         
         # 处理添加操作
         add_operations = [op for op in result.operations if op.operation_type == "add"]
@@ -228,6 +239,7 @@ class Memory:
                     "chat_id": chat_id,
                     "text": text,
                     "vector": embeddings[i],
+                    "group_id": -1,
                 }
                 entities.append(entity)
             
@@ -305,12 +317,12 @@ class Memory:
         # 处理删除操作
         for op in result.operations:
             if op.operation_type == "delete":
-                await asyncio.to_thread(self.delete, op.memory_id)
+                await asyncio.to_thread(self.delete, op.memory_id, user_id)
         
         # 处理更新操作
         for op in result.operations:
             if op.operation_type == "update":
-                await asyncio.to_thread(self.update, op.memory_id, {"text": op.text})
+                await asyncio.to_thread(self.update, op.memory_id, {"text": op.text}, user_id)
         
         # 处理添加操作
         add_operations = [op for op in result.operations if op.operation_type == "add"]
@@ -331,6 +343,7 @@ class Memory:
                     "chat_id": chat_id,
                     "text": text,
                     "vector": embeddings[i],
+                    "group_id": -1,
                 }
                 entities.append(entity)
             
@@ -351,9 +364,10 @@ class Memory:
         query: str,
         user_id: str
     ) -> Dict[str, List[MemoryRecord]]:
-        """Search memories for a user.
+        """Search memories for a user with narrative group expansion.
         
-        Retrieves both episodic and semantic memories without ranking.
+        Retrieves both episodic and semantic memories. Episodic memories are
+        expanded to include all members of their narrative groups.
         
         Args:
             query: Search query text
@@ -362,15 +376,18 @@ class Memory:
         Returns:
             Dict with separated episodic and semantic memories
         """
+        import numpy as np
+        
         get_client().update_current_trace(
             session_id=f"search_{user_id}_{int(time.time())}",
             user_id=user_id,
-            tags=["memory_search", "retrieval"],
+            tags=["memory_search", "retrieval", "narrative_expansion"],
             metadata={
                 "operation": "search_memory",
                 "query_length": len(query)
             }
         )
+        
         # Generate embedding for query
         query_vectors = self._embedding_client.encode([query])
         
@@ -378,6 +395,7 @@ class Memory:
             return {"episodic": [], "semantic": []}
         
         query_vector = query_vectors[0]
+        q = normalize(np.array(query_vector))
         
         # 根据配置选择不同的语义记忆获取方式
         if self._config.use_all_semantic:
@@ -397,27 +415,92 @@ class Memory:
             if semantic_results and semantic_results[0]:
                 semantic_memories = [self._hit_to_memory_record(hit) for hit in semantic_results[0]]
         
-        # Search episodic memories
+        # 步骤1：向量检索情景记忆种子
         episodic_filter = f'user_id == "{user_id}" and memory_type == "episodic"'
         episodic_results = self._store.search(
-            vectors=[query_vector],
+            vectors=[q.tolist()],
             filter_expr=episodic_filter,
-            limit=self._config.k_episodic
+            limit=self._config.k_episodic,
+            output_fields=["id", "group_id", "user_id", "memory_type", "ts", "chat_id", "text"],
         )
-        episodic_memories = []
-        if episodic_results and episodic_results[0]:
-            episodic_memories = [self._hit_to_memory_record(hit) for hit in episodic_results[0]]
         
-        # 直接返回分离的结果，不排序
+        seeds = episodic_results[0] if episodic_results and episodic_results[0] else []
+        if not seeds:
+            # 无种子，直接返回空情景记忆 + 语义记忆
+            result = {
+                "episodic": [],
+                "semantic": semantic_memories
+            }
+            logger.info(
+                f"Memory operation 'search': user_id={user_id}, "
+                f"episodic_results=0, semantic_results={len(semantic_memories)}"
+            )
+            return result
+        
+        # 步骤2：根据种子的group_id决定扩展哪些组
+        expansion_group_ids = set()
+        
+        for hit in seeds:
+            g_id = hit.get("group_id")
+            # 只有group_id >= 0的才扩展，-1表示未分组，不扩展
+            if g_id is None or g_id == -1:
+                continue
+            expansion_group_ids.add(g_id)
+        
+        # 步骤3：拉出这些扩展组的所有成员
+        expanded_member_ids = set()
+        
+        for g_id in expansion_group_ids:
+            members_res = self._store.query(
+                filter_expr=f"group_id == {g_id} and user_id == '{user_id}'",
+                output_fields=["id"],
+            )
+            member_ids = [row["id"] for row in members_res]
+            # 不限制每组的记忆数
+            expanded_member_ids.update(member_ids)
+        
+        # 步骤4：合并种子 + 扩展成员 → 去重 → 拉完整内容
+        seed_ids = {hit["id"] for hit in seeds}
+        all_ids = seed_ids | expanded_member_ids
+        
+        if not all_ids:
+            final_memories = []
+        else:
+            id_list = list(all_ids)
+            
+            mem_res = self._store.query(
+                filter_expr=f"id in {id_list} and user_id == '{user_id}'",
+                output_fields=["id", "user_id", "memory_type", "ts", "chat_id", "text", "group_id"],
+            )
+            
+            id2row = {row["id"]: row for row in mem_res}
+            
+            final_memories = []
+            
+            # 先放种子，保证它们在prompt里靠前（按相似度排序）
+            for hit in seeds:
+                row = id2row.get(hit["id"])
+                if row:
+                    final_memories.append(self._hit_to_memory_record(row))
+            
+            # 再放扩展成员（去掉已经是种子的）
+            for mid in expanded_member_ids:
+                if mid in seed_ids:
+                    continue
+                row = id2row.get(mid)
+                if row:
+                    final_memories.append(self._hit_to_memory_record(row))
+        
         result = {
-            "episodic": episodic_memories,
+            "episodic": final_memories,  # 种子 + 叙事组扩展
             "semantic": semantic_memories
         }
         
         # Count by type for logging
         logger.info(
             f"Memory operation 'search': user_id={user_id}, "
-            f"episodic_results={len(episodic_memories)}, semantic_results={len(semantic_memories)}"
+            f"episodic_results={len(final_memories)} (seeds={len(seeds)}, expanded={len(expanded_member_ids)}), "
+            f"semantic_results={len(semantic_memories)}"
         )
         
         return result
@@ -435,56 +518,115 @@ class Memory:
             distance=hit.get("distance", 0.0)
         )
     
+    def assign_to_narrative_group(self, memory_ids: List[int], user_id: str) -> Dict[int, int]:
+        """将被使用的情景记忆分配到叙事组。
+        
+        Args:
+            memory_ids: 被MemoryUsageJudge判断为实际使用的情景记忆ID列表
+            user_id: 用户标识
+            
+        Returns:
+            Dict[int, int] - memory_id到group_id的映射
+        """
+        return self._narrative_manager.assign_to_narrative_group(memory_ids, user_id)
+    
     
 
 
-    def update(self, memory_id: int, data: Dict[str, Any]) -> bool:
-        """Update a memory record.
+    def update(self, memory_id: int, data: Dict[str, Any], user_id: str = None) -> bool:
+        """Update a memory record using delete + add strategy.
         
-        If text is changed, regenerates the embedding vector.
+        Uses delete + add strategy to handle narrative group properly.
+        Updated memory will have group_id reset to -1 and will be
+        reassigned to narrative group only when used in future conversations.
         
         Args:
             memory_id: ID of memory to update
-            data: Fields to update
+            data: Fields to update (must include 'text')
+            user_id: User ID (required for narrative group cleanup)
             
         Returns:
             True if update succeeded
             
         Requirements: 8.3
         """
-        # Check if text is being updated
-        if "text" in data:
-            # Regenerate embedding for new text
-            embeddings = self._embedding_client.encode([data["text"]])
-            if embeddings:
-                data["vector"] = embeddings[0]
+        if "text" not in data:
+            logger.warning(f"Memory operation 'update' failed: memory_id={memory_id}, no 'text' field provided")
+            return False
         
-        success = self._store.update(memory_id, data)
+        if user_id is None:
+            logger.warning(f"Memory operation 'update' failed: memory_id={memory_id}, user_id is required")
+            return False
         
-        if success:
-            logger.info(
-                f"Memory operation 'update': memory_id={memory_id}, "
-                f"fields_updated={list(data.keys())}, affected_count=1"
+        try:
+            # 1. 查询原记忆信息
+            original_memories = self._store.query(
+                filter_expr=f"id == {memory_id} and user_id == '{user_id}'",
+                output_fields=["id", "user_id", "memory_type", "ts", "chat_id", "text"]
             )
-        else:
-            logger.warning(
-                f"Memory operation 'update' failed: memory_id={memory_id}, "
-                f"affected_count=0"
-            )
-        
-        return success
+            
+            if not original_memories:
+                logger.warning(f"Memory operation 'update' failed: memory_id={memory_id}, memory not found")
+                return False
+            
+            original = original_memories[0]
+            
+            # 2. 删除原记忆（会自动处理叙事组清理）
+            self.delete(memory_id, user_id)
+            
+            # 3. 创建新记忆（group_id默认为-1）
+            new_text = data["text"]
+            embeddings = self._embedding_client.encode([new_text])
+            
+            if not embeddings:
+                logger.warning(f"Memory operation 'update' failed: memory_id={memory_id}, embedding generation failed")
+                return False
+            
+            entity = {
+                "user_id": user_id,
+                "memory_type": original["memory_type"],
+                "ts": int(time.time()),  # 更新时间戳
+                "chat_id": original["chat_id"],
+                "text": new_text,
+                "vector": embeddings[0],
+                "group_id": -1
+            }
+            
+            new_ids = self._store.insert([entity])
+            
+            if new_ids:
+                logger.info(
+                    f"Memory operation 'update': memory_id={memory_id} -> new_id={new_ids[0]}, "
+                    f"text_updated=True, group_reset=True, affected_count=1"
+                )
+                return True
+            else:
+                logger.warning(f"Memory operation 'update' failed: memory_id={memory_id}, insert failed")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"Memory operation 'update' failed: memory_id={memory_id}, error: {e}")
+            return False
     
-    def delete(self, memory_id: int) -> bool:
-        """Delete a memory record.
+    def delete(self, memory_id: int, user_id: str = None) -> bool:
+        """Delete a memory record with narrative group cleanup.
         
         Args:
             memory_id: ID of memory to delete
+            user_id: User ID (required for narrative group cleanup)
             
         Returns:
             True if deletion succeeded
             
         Requirements: 8.4
         """
+        # 如果提供了user_id，先进行叙事组清理
+        if user_id is not None:
+            try:
+                self._narrative_manager.delete_memory_from_group(memory_id, user_id)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup narrative group for memory {memory_id}: {e}")
+        
         count = self._store.delete(ids=[memory_id])
         success = count > 0
         
@@ -625,6 +767,7 @@ class Memory:
                 "chat_id": source_chat_id,
                 "text": fact,
                 "vector": embeddings[i],
+                "group_id": -1,
             }
             entities.append(entity)
         
