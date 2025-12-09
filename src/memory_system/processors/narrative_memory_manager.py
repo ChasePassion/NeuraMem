@@ -5,11 +5,13 @@ groups based on vector similarity and usage patterns.
 """
 
 import logging
+import time
 import numpy as np
 from typing import List, Dict, Any, Optional
 
 from ..clients import MilvusStore
 from ..config import MemoryConfig
+from langfuse import observe, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,10 @@ class NarrativeMemoryManager:
         self._config = config
         self._client = milvus_store._client
         self._user_collections = set()  # Track created user collections
+
+    def _build_session_id(self, user_id: str, operation: str) -> str:
+        """Build a stable session id for Langfuse traces."""
+        return f"{operation}_{user_id}_{int(time.time())}"
     
     def _update_record(self, collection_name: str, record_id: int, data: Dict[str, Any], id_field: str = "id") -> bool:
         """更新记录（使用upsert实现）
@@ -134,6 +140,7 @@ class NarrativeMemoryManager:
         logger.info(f"Created groups collection '{groups_collection_name}' with dim={self._config.embedding_dim}")
         return groups_collection_name
     
+    @observe(as_type="chain", name="narrative_assign_to_group")
     def assign_to_narrative_group(self, memory_ids: List[int], user_id: str) -> Dict[int, int]:
         """将被使用的情景记忆分配到叙事组。
         
@@ -144,12 +151,33 @@ class NarrativeMemoryManager:
         Returns:
             Dict[int, int] - memory_id到group_id的映射
         """
+        session_id = self._build_session_id(user_id, "narrative_assign")
+        get_client().update_current_trace(
+            session_id=session_id,
+            user_id=user_id,
+            tags=["narrative_memory", "group_assignment"],
+            metadata={
+                "requested_memory_ids": memory_ids,
+                "memory_ids_count": len(memory_ids),
+                "collection": self._store._collection_name,
+                "similarity_threshold": self._config.narrative_similarity_threshold,
+            }
+        )
+
         if not memory_ids:
+            get_client().update_current_trace(
+                session_id=session_id,
+                output={"assigned_groups": {}, "success": True},
+                metadata={"reason": "empty_input"}
+            )
             return {}
         
         results = {}
         memories_collection = self._store._collection_name
         groups_collection = self._ensure_groups_collection(user_id)
+        created_groups = 0
+        reused_groups = 0
+        failed_ids = []
         
         for memory_id in memory_ids:
             try:
@@ -229,6 +257,7 @@ class NarrativeMemoryManager:
                     
                     logger.info(f"Created new group {group_id} for memory {memory_id}")
                     results[memory_id] = group_id
+                    created_groups += 1
                     
                 else:
                     # 步骤3.2：加入已有组（重算中心）
@@ -265,13 +294,32 @@ class NarrativeMemoryManager:
                     
                     logger.info(f"Added memory {memory_id} to existing group {group_id} (size: {size})")
                     results[memory_id] = group_id
+                    reused_groups += 1
                     
             except Exception as e:
                 logger.error(f"Failed to assign memory {memory_id} to narrative group: {e}")
+                failed_ids.append(memory_id)
                 continue
+
+        get_client().update_current_trace(
+            session_id=session_id,
+            output={
+                "assigned_groups": results,
+                "created_groups": created_groups,
+                "reused_groups": reused_groups,
+                "failed_ids": failed_ids,
+                "success": True
+            },
+            metadata={
+                "completed_memory_ids": list(results.keys()),
+                "missing_memory_ids": [mid for mid in memory_ids if mid not in results and mid not in failed_ids],
+                "threshold": self._config.narrative_similarity_threshold
+            }
+        )
         
         return results
     
+    @observe(as_type="chain", name="narrative_delete_from_group")
     def delete_memory_from_group(self, memory_id: int, user_id: str) -> None:
         """删除记忆时同步更新叙事组。
         
@@ -279,6 +327,13 @@ class NarrativeMemoryManager:
             memory_id: 要删除的记忆ID
             user_id: 用户标识
         """
+        session_id = self._build_session_id(user_id, "narrative_delete")
+        get_client().update_current_trace(
+            session_id=session_id,
+            user_id=user_id,
+            tags=["narrative_memory", "group_cleanup"],
+            metadata={"memory_id": memory_id}
+        )
         try:
             memories_collection = self._store._collection_name
             groups_collection = self._ensure_groups_collection(user_id)
@@ -292,9 +347,15 @@ class NarrativeMemoryManager:
             
             if not res:
                 logger.warning(f"Memory {memory_id} not found for group cleanup")
+                get_client().update_current_trace(
+                    session_id=session_id,
+                    output={"found": False, "cleanup_performed": False}
+                )
                 return
             
             group_id = res[0]["group_id"]
+            group_deleted = False
+            group_updated = False
             
             # 步骤2：删除memories中该条记录（这个在Memory.delete中会处理）
             
@@ -314,6 +375,7 @@ class NarrativeMemoryManager:
                         filter=f"group_id == {group_id} and user_id == '{user_id}'"
                     )
                     logger.info(f"Deleted empty group {group_id}")
+                    group_deleted = True
                 else:
                     vectors = [row["vector"] for row in members_res]
                     if vectors:
@@ -328,10 +390,26 @@ class NarrativeMemoryManager:
                             id_field="group_id"
                         )
                         logger.info(f"Updated group {group_id} centroid (size: {n})")
+                        group_updated = True
+            
+            get_client().update_current_trace(
+                session_id=session_id,
+                output={
+                    "found": True,
+                    "group_id": group_id,
+                    "group_deleted": group_deleted,
+                    "group_updated": group_updated
+                }
+            )
                     
         except Exception as e:
             logger.error(f"Failed to cleanup group for memory {memory_id}: {e}")
+            get_client().update_current_trace(
+                session_id=session_id,
+                output={"found": False, "error": str(e)}
+            )
     
+    @observe(as_type="chain", name="narrative_get_group_members")
     def get_group_members(self, group_id: int, user_id: str) -> List[Dict[str, Any]]:
         """获取叙事组中的所有成员。
         
@@ -342,6 +420,13 @@ class NarrativeMemoryManager:
         Returns:
             组内所有记忆列表
         """
+        session_id = self._build_session_id(user_id, "narrative_members")
+        get_client().update_current_trace(
+            session_id=session_id,
+            user_id=user_id,
+            tags=["narrative_memory", "group_members"],
+            metadata={"group_id": group_id}
+        )
         try:
             memories_collection = self._store._collection_name
             
@@ -351,8 +436,20 @@ class NarrativeMemoryManager:
                 output_fields=["id", "user_id", "memory_type", "ts", "chat_id", "text", "group_id"],
             )
             
+            get_client().update_current_trace(
+                session_id=session_id,
+                output={
+                    "group_id": group_id,
+                    "members_count": len(members_res),
+                    "success": True
+                }
+            )
             return members_res
             
         except Exception as e:
             logger.error(f"Failed to get members for group {group_id}: {e}")
+            get_client().update_current_trace(
+                session_id=session_id,
+                output={"group_id": group_id, "success": False, "error": str(e)}
+            )
             return []
