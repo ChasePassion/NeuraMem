@@ -57,7 +57,7 @@ class MilvusStore:
     def __init__(
         self,
         uri: str,
-        collection_name: str = "memories"
+        collection_name: str
     ):
         """Initialize Milvus connection.
         

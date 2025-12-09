@@ -19,8 +19,8 @@ class LLMClient:
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://api.deepseek.com",
-        model: str = "deepseek-chat",
+        base_url: str,
+        model: str,
         fallback_api_key: Optional[str] = None,
         fallback_base_url: Optional[str] = None,
         fallback_model: Optional[str] = None,

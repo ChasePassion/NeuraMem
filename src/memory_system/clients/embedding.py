@@ -20,8 +20,8 @@ class EmbeddingClient:
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://openrouter.ai/api/v1",
-        model: str = "qwen/qwen3-embedding-4b"
+        base_url: str,
+        model: str
     ):
         """Initialize OpenRouter embedding client.
         

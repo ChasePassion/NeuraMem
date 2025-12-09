@@ -105,16 +105,19 @@ class Memory:
         """Factory method to create EmbeddingClient."""
         return EmbeddingClient(
             api_key=self._config.siliconflow_api_key,
-            base_url=self._config.embedding_base_url,
-            model=self._config.embedding_model
+            base_url=self._config.siliconflow_base_url,
+            model=self._config.siliconflow_embedding_model
         )
     
     def _create_llm_client(self) -> LLMClient:
         """Factory method to create LLMClient."""
         return LLMClient(
             api_key=self._config.deepseek_api_key,
-            base_url=self._config.llm_base_url,
-            model=self._config.llm_model
+            base_url=self._config.deepseek_base_url,
+            model=self._config.deepseek_model,
+            fallback_api_key=self._config.openrouter_api_key,
+            fallback_base_url=self._config.openrouter_base_url,
+            fallback_model=None
         )
     
     def _create_milvus_store(self) -> MilvusStore:
