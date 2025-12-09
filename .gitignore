@@ -4,24 +4,12 @@
 # =============================================================================
 # SECURITY CRITICAL - API KEYS AND CONFIGURATIONS
 # =============================================================================
-# Configuration files containing API keys (CRITICAL SECURITY RISK)
-src/memory_system/config.py
-config.py
-*config*.py
+#API keys (CRITICAL SECURITY RISK)
 .env
 .env.local
 .env.development
 .env.test
 .env.production
-
-# Files containing API keys, secrets, or credentials
-*api_key*
-*secret*
-*credentials*
-*.pem
-*.key
-*.p12
-*.pfx
 
 # =============================================================================
 # PYTHON SPECIFIC
