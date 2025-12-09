@@ -3,6 +3,7 @@
 from .memory_manager import EpisodicMemoryManager, MemoryManagementResult, MemoryOperation
 from .semantic_writer import SemanticWriter, SemanticExtraction
 from .memory_usage_judge import MemoryUsageJudge
+from .narrative_memory_manager import NarrativeMemoryManager
 
 __all__ = [
     # Memory Manager
@@ -14,4 +15,6 @@ __all__ = [
     "SemanticExtraction",
     # Memory Usage Judge
     "MemoryUsageJudge",
+    # Narrative Memory Manager
+    "NarrativeMemoryManager",
 ]

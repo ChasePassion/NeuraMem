@@ -67,7 +67,7 @@ class MemoryDemoApp:
             # Query episodic memories
             episodic = self.memory._store.query(
                 filter_expr=f'user_id == "{self.current_user_id}" and memory_type == "episodic"',
-                output_fields=["id", "text", "ts"],
+                output_fields=["id", "text", "ts", "group_id"],
                 limit=100
             )
             
@@ -92,7 +92,9 @@ class MemoryDemoApp:
                     ts = mem.get("ts", 0)
                     time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "N/A"
                     text = mem.get("text", "")
-                    output.append(f"[ID:{mem.get('id')}] 时间:{time_str}")
+                    group_id = mem.get("group_id", -1)
+                    group_info = f" [组:{group_id}]" if group_id != -1 else " [未分组]"
+                    output.append(f"[ID:{mem.get('id')}] 时间:{time_str}{group_info}")
                     output.append(f"  内容: {text}")
                     output.append("")
             else:
@@ -117,6 +119,102 @@ class MemoryDemoApp:
             
         except Exception as e:
             return f"❌ 获取记忆失败: {str(e)}"
+
+    def get_narrative_groups(self) -> str:
+        """Get all narrative groups for current user and format as display text."""
+        if not self.memory:
+            return "⚠️ 请先初始化记忆系统"
+        
+        try:
+            # Get groups collection name for current user
+            groups_collection_name = f"groups_{self.current_user_id}"
+            
+            # Check if groups collection exists
+            if not self.memory._store._client.has_collection(groups_collection_name):
+                return f"📋 叙事组 - 用户: {self.current_user_id}\n\n(暂无叙事组)"
+            
+            # Query all groups for the user
+            groups = self.memory._store._client.query(
+                collection_name=groups_collection_name,
+                filter=f'user_id == "{self.current_user_id}"',
+                output_fields=["group_id", "size", "centroid_vector"],
+                limit=1000
+            )
+            
+            output = []
+            output.append(f"📋 叙事组 - 用户: {self.current_user_id}")
+            output.append(f"{'='*50}")
+            output.append(f"叙事组总数: {len(groups)} 个")
+            output.append("")
+            
+            if groups:
+                # Sort groups by size (largest first)
+                groups_sorted = sorted(groups, key=lambda x: x.get("size", 0), reverse=True)
+                
+                for group in groups_sorted:
+                    group_id = group.get("group_id", 0)
+                    size = group.get("size", 0)
+                    
+                    output.append(f"🔗 叙事组 [ID:{group_id}]")
+                    output.append(f"   成员数量: {size}")
+                    
+                    # Get members of this group
+                    try:
+                        members = self.memory._store.query(
+                            filter_expr=f'group_id == {group_id} and user_id == "{self.current_user_id}"',
+                            output_fields=["id", "text", "ts"],
+                            limit=1000
+                        )
+                        
+                        if members:
+                            output.append(f"   成员列表:")
+                            for mem in sorted(members, key=lambda x: x.get("ts", 0), reverse=True):
+                                ts = mem.get("ts", 0)
+                                time_str = datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts else "N/A"
+                                text = mem.get("text", "")
+                                # Truncate long text
+                                if len(text) > 50:
+                                    text = text[:47] + "..."
+                                output.append(f"     [ID:{mem.get('id')}] {time_str} - {text}")
+                        
+                    except Exception as e:
+                        output.append(f"   (获取成员失败: {str(e)})")
+                    
+                    output.append("")
+            else:
+                output.append("(暂无叙事组)")
+                output.append("")
+            
+            # Add statistics
+            try:
+                # Count ungrouped episodic memories
+                ungrouped = self.memory._store.query(
+                    filter_expr=f'user_id == "{self.current_user_id}" and memory_type == "episodic" and group_id == -1',
+                    output_fields=["id"],
+                    limit=10000
+                )
+                
+                total_episodic = self.memory._store.query(
+                    filter_expr=f'user_id == "{self.current_user_id}" and memory_type == "episodic"',
+                    output_fields=["id"],
+                    limit=10000
+                )
+                
+                output.append("📈 统计信息:")
+                output.append(f"   总情景记忆: {len(total_episodic)} 条")
+                output.append(f"   已分组记忆: {len(total_episodic) - len(ungrouped)} 条")
+                output.append(f"   未分组记忆: {len(ungrouped)} 条")
+                if len(total_episodic) > 0:
+                    grouped_ratio = (len(total_episodic) - len(ungrouped)) / len(total_episodic) * 100
+                    output.append(f"   分组比例: {grouped_ratio:.1f}%")
+                
+            except Exception as e:
+                output.append(f"   (统计信息获取失败: {str(e)})")
+            
+            return "\n".join(output)
+            
+        except Exception as e:
+            return f"❌ 获取叙事组失败: {str(e)}"
 
     @observe(as_type="agent") 
     async def chat(self, message: str, history: List[Any]) -> Tuple[str, List[Dict[str, str]], str]:
@@ -188,11 +286,11 @@ class MemoryDemoApp:
                 {"role": "user", "content": message},
                 {"role": "assistant", "content": error_response}
             ]
-            yield new_history, await asyncio.to_thread(self.get_all_memories)
+            yield new_history, await asyncio.to_thread(self.get_all_memories), await asyncio.to_thread(self.get_narrative_groups)
             return
         
         if not message.strip():
-            yield history_messages, await asyncio.to_thread(self.get_all_memories)
+            yield history_messages, await asyncio.to_thread(self.get_all_memories), await asyncio.to_thread(self.get_narrative_groups)
             return
         
         try:
@@ -217,19 +315,25 @@ class MemoryDemoApp:
             new_history = history_messages + [{"role": "user", "content": message}]
             
             # 先添加用户消息到历史
-            yield new_history, await asyncio.to_thread(self.get_all_memories)
+            yield new_history, await asyncio.to_thread(self.get_all_memories), await asyncio.to_thread(self.get_narrative_groups)
             
             # 流式生成回复
             async for chunk in self._generate_response_stream(full_context, prepared_messages):
                 accumulated_response += chunk
                 current_history = new_history + [{"role": "assistant", "content": accumulated_response}]
-                yield current_history, await asyncio.to_thread(self.get_all_memories)
+                yield current_history, await asyncio.to_thread(self.get_all_memories), await asyncio.to_thread(self.get_narrative_groups)
             
             # 6. 将完整回复放入队列供记忆处理使用
             await response_queue.put(accumulated_response)
             
-            # 6. 启动记忆写入任务（在后台异步执行）
-            asyncio.create_task(self._manage_memory_async_with_queue(message, response_queue, history_messages))
+            # 6. 启动记忆处理任务（在后台异步执行）
+            asyncio.create_task(self._process_memory_async(
+                user_message=message,
+                response_queue=response_queue,
+                history_messages=history_messages,
+                relevant_memories=relevant_memories,
+                full_context=full_context
+            ))
             
         except Exception as e:
             error_msg = f"❌ 处理失败: {str(e)}"
@@ -237,7 +341,7 @@ class MemoryDemoApp:
                 {"role": "user", "content": message},
                 {"role": "assistant", "content": error_msg}
             ]
-            yield error_history, await asyncio.to_thread(self.get_all_memories)
+            yield error_history, await asyncio.to_thread(self.get_all_memories), await asyncio.to_thread(self.get_narrative_groups)
     
     def _normalize_history(self, history: List[Any]) -> List[Dict[str, str]]:
         """Normalize Chatbot history to the messages format Gradio expects."""
@@ -354,7 +458,7 @@ Maintain a friendly and natural conversation style.
         # 导入 MEMORY_ANSWER_PROMPT
         try:
             from prompts import MEMORY_ANSWER_PROMPT
-            system_prompt = f"{MEMORY_ANSWER_PROMPT}\n\nUser ID: {self.current_user_id}\n\n{context}"
+            system_prompt = f"{MEMORY_ANSWER_PROMPT}\n\n{context}"
         except ImportError:
             system_prompt = f"""You are an AI assistant with long-term memory capabilities. User ID: {self.current_user_id}
 Please answer based on the user's messages and relevant memories. If there are relevant memories, reflect that you remember the user's information in your response.
@@ -428,6 +532,67 @@ Maintain a friendly and natural conversation style.
                 )
         except Exception as e:
             logger.warning(f"Async memory manage with queue failed: {e}")
+
+    async def _process_memory_async(
+        self,
+        user_message: str,
+        response_queue: asyncio.Queue,
+        history_messages: List[Dict[str, str]],
+        relevant_memories: Dict[str, List[MemoryRecord]],
+        full_context: str
+    ) -> None:
+        """异步处理记忆：判断使用 → 叙事分组 → manage"""
+        try:
+            # 1. 从队列获取完整回复
+            assistant_message = await response_queue.get()
+            
+            # 2. 调用 MemoryUsageJudge 判断哪些情景记忆被使用
+            episodic_texts = [mem.text for mem in relevant_memories.get("episodic", [])]
+            semantic_texts = [mem.text for mem in relevant_memories.get("semantic", [])]
+            
+            used_episodic_texts = await asyncio.to_thread(
+                self.memory._memory_usage_judge.judge_used_memories,
+                system_prompt=full_context,
+                episodic_memories=episodic_texts,
+                semantic_memories=semantic_texts,
+                message_history=history_messages,
+                final_reply=assistant_message
+            )
+            
+            # 3. 找出被使用的情景记忆的 ID
+            used_memory_ids = []
+            for mem in relevant_memories.get("episodic", []):
+                if mem.text in used_episodic_texts:
+                    used_memory_ids.append(mem.id)
+            
+            # 4. 对被使用的情景记忆执行叙事分组
+            if used_memory_ids:
+                await asyncio.to_thread(
+                    self.memory.assign_to_narrative_group,
+                    memory_ids=used_memory_ids,
+                    user_id=self.current_user_id
+                )
+                logger.info(f"Assigned {len(used_memory_ids)} episodic memories to narrative groups")
+            
+            # 5. 执行 manage 管理记忆
+            chat_id = f"chat_{int(time.time())}"
+            if hasattr(self.memory, "manage_async"):
+                await self.memory.manage_async(
+                    user_text=user_message,
+                    assistant_text=assistant_message,
+                    user_id=self.current_user_id,
+                    chat_id=chat_id
+                )
+            else:
+                await asyncio.to_thread(
+                    self.memory.manage,
+                    user_message,
+                    assistant_message,
+                    self.current_user_id,
+                    chat_id
+                )
+        except Exception as e:
+            logger.warning(f"Async memory processing failed: {e}")
 
     async def _add_to_memory_async(self, message: str, history: List[Dict[str, str]]) -> None:
         """异步添加记忆到后台（不阻塞 Gradio 事件循环）。"""
@@ -541,20 +706,20 @@ def create_demo_interface():
                 gr.Markdown("## 📚 记忆库")
                 memory_display = gr.Textbox(
                     label="实时记忆状态",
-                    lines=25,
-                    max_lines=30,
+                    lines=20,
+                    max_lines=25,
                     interactive=False
                 )
                 refresh_btn = gr.Button("🔄 刷新记忆", variant="secondary")
                 
                 gr.Markdown("### ⚙️ 记忆巩固")
                 consolidate_btn = gr.Button("🔧 运行巩固", variant="primary")
-                consolidation_output = gr.Textbox(label="巩固日志", lines=8, interactive=False)
+                consolidation_output = gr.Textbox(label="巩固日志", lines=6, interactive=False)
                 
                 reset_btn = gr.Button("🗑️ 清空记忆", variant="stop")
                 reset_output = gr.Textbox(label="操作结果", lines=2, interactive=False)
             
-            # Right panel - Chat interface
+            # Middle panel - Chat interface
             with gr.Column(scale=1):
                 gr.Markdown("## 💬 对话测试")
                 chatbot = gr.Chatbot(label="对话历史", height=400, type='messages')
@@ -568,6 +733,26 @@ def create_demo_interface():
                 - 项目信息: "我正在开发一个AI记忆系统"
                 - 闲聊测试: "你好" (不会被记录)
                 """)
+            
+            # Right panel - Narrative groups display
+            with gr.Column(scale=1):
+                gr.Markdown("## 📋 叙事组")
+                groups_display = gr.Textbox(
+                    label="叙事组状态",
+                    lines=25,
+                    max_lines=30,
+                    interactive=False
+                )
+                refresh_groups_btn = gr.Button("🔄 刷新叙事组", variant="secondary")
+                
+                gr.Markdown("### 📊 叙事统计")
+                gr.Markdown("""
+                **叙事记忆功能说明:**
+                - 🔗 叙事组将相关的情景记忆组织在一起
+                - 📈 显示分组统计和成员信息
+                - 🎯 只有被实际使用的记忆才会分组
+                - 🔄 自动维护组中心向量
+                """)
         
         # Event handlers
         init_btn.click(
@@ -577,20 +762,25 @@ def create_demo_interface():
         ).then(
             fn=app.get_all_memories,
             outputs=[memory_display]
+        ).then(
+            fn=app.get_narrative_groups,
+            outputs=[groups_display]
         )
         
         refresh_btn.click(fn=app.get_all_memories, outputs=[memory_display])
         
+        refresh_groups_btn.click(fn=app.get_narrative_groups, outputs=[groups_display])
+        
         send_btn.click(
             fn=app.chat_stream,
             inputs=[msg_input, chatbot],
-            outputs=[chatbot, memory_display]
+            outputs=[chatbot, memory_display, groups_display]
         )
         
         msg_input.submit(
             fn=app.chat_stream,
             inputs=[msg_input, chatbot],
-            outputs=[chatbot, memory_display]
+            outputs=[chatbot, memory_display, groups_display]
         )
         
         consolidate_btn.click(

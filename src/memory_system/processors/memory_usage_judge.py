@@ -73,7 +73,10 @@ class MemoryUsageJudge:
                 default={"used_episodic_memories": []}
             )
             
-            used_memories = response.get("used_episodic_memories", [])
+            # chat_json returns {"parsed_data": {...}, "raw_response": ..., ...}
+            # Extract the actual parsed data
+            parsed_data = response.get("parsed_data", {})
+            used_memories = parsed_data.get("used_episodic_memories", [])
             
             logger.info(
                 f"Memory usage judgment: {len(used_memories)}/{len(episodic_memories)} "

@@ -12,6 +12,7 @@ from pymilvus import (
 
 from ..exceptions import MilvusConnectionError
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +42,16 @@ class MilvusStore:
         ("chat_id", DataType.VARCHAR, {"max_length": 128}),
         ("text", DataType.VARCHAR, {"max_length": 65535}),
         ("vector", DataType.FLOAT_VECTOR, {"dim": 2560}),
+        # 新增，用于叙事分组，-1表示未分组；显式提供默认值以防遗漏
+        ("group_id", DataType.INT64, {"default_value": -1}),
+    ]
+    
+    # 叙事组表schema
+    GROUP_SCHEMA_FIELDS = [
+        ("group_id", DataType.INT64, {"is_primary": True, "auto_id": True}),
+        ("user_id", DataType.VARCHAR, {"max_length": 128}),
+        ("centroid_vector", DataType.FLOAT_VECTOR, {"dim": 2560}),
+        ("size", DataType.INT64, {}),   # 当前组内成员数量
     ]
     
     def __init__(
@@ -117,6 +128,10 @@ class MilvusStore:
         """
         if not entities:
             return []
+        
+        # Ensure group_id is always present to satisfy collection schema
+        for ent in entities:
+            ent.setdefault("group_id", -1)
         
         result = self._client.insert(
             collection_name=self._collection_name,
