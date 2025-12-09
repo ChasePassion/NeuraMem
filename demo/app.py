@@ -314,19 +314,24 @@ class MemoryDemoApp:
             accumulated_response = ""
             new_history = history_messages + [{"role": "user", "content": message}]
             
-            # 先添加用户消息到历史
-            yield new_history, await asyncio.to_thread(self.get_all_memories), await asyncio.to_thread(self.get_narrative_groups)
+            # 先添加用户消息到历史（不刷新记忆面板）
+            yield new_history, gr.update(), gr.update()
             
-            # 流式生成回复
+            # 流式生成回复（只更新聊天历史，不查询数据库）
             async for chunk in self._generate_response_stream(full_context, prepared_messages):
                 accumulated_response += chunk
                 current_history = new_history + [{"role": "assistant", "content": accumulated_response}]
-                yield current_history, await asyncio.to_thread(self.get_all_memories), await asyncio.to_thread(self.get_narrative_groups)
+                # 使用 gr.update() 跳过记忆面板更新，实现毫秒级流式输出
+                yield current_history, gr.update(), gr.update()
             
             # 6. 将完整回复放入队列供记忆处理使用
             await response_queue.put(accumulated_response)
             
-            # 6. 启动记忆处理任务（在后台异步执行）
+            # 7. 流式完成后，刷新记忆显示（仅执行一次数据库查询）
+            final_history = new_history + [{"role": "assistant", "content": accumulated_response}]
+            yield final_history, await asyncio.to_thread(self.get_all_memories), await asyncio.to_thread(self.get_narrative_groups)
+            
+            # 8. 启动记忆处理任务（在后台异步执行）
             asyncio.create_task(self._process_memory_async(
                 user_message=message,
                 response_queue=response_queue,
@@ -470,14 +475,10 @@ Maintain a friendly and natural conversation style.
             # 获取最后一条用户消息
             user_message = messages[-1]["content"] if messages else ""
             
-            # 在线程池中执行流式调用
-            response_stream = await asyncio.to_thread(
-                self.memory._llm_client.chat_stream, system_prompt, user_message
-            )
-            
-            accumulated_response = ""
-            for chunk in response_stream:
-                accumulated_response += chunk
+            # 使用原生异步流式调用（不阻塞事件循环）
+            async for chunk in self.memory._llm_client.chat_stream_async(
+                system_prompt, user_message
+            ):
                 yield chunk
                 
         except Exception as llm_error:

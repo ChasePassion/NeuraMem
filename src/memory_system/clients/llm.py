@@ -5,7 +5,7 @@ import time
 import logging
 from typing import Dict, Any, Optional
 
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 from ..exceptions import OpenRouterError
 from langfuse import observe, get_client
@@ -36,12 +36,17 @@ class LLMClient:
             fallback_model: Optional fallback model ID
         """
         self._client = OpenAI(api_key=api_key, base_url=base_url)
+        self._async_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._model = model
         
         self._fallback_client = None
+        self._async_fallback_client = None
         self._fallback_model = None
         if fallback_api_key and fallback_base_url and fallback_model:
             self._fallback_client = OpenAI(
+                api_key=fallback_api_key, base_url=fallback_base_url
+            )
+            self._async_fallback_client = AsyncOpenAI(
                 api_key=fallback_api_key, base_url=fallback_base_url
             )
             self._fallback_model = fallback_model
@@ -150,6 +155,105 @@ class LLMClient:
                     self._max_retries,
                     fallback_error.last_error,
                 ) from fallback_error
+    
+    @observe(as_type="generation")
+    async def chat_stream_async(self, system_prompt: str, user_message: str):
+        """Async streaming chat using native AsyncOpenAI client.
+        
+        This method provides true async streaming without blocking the event loop.
+        Much more efficient than chat_stream() wrapped in asyncio.to_thread().
+        
+        Args:
+            system_prompt: System prompt for LLM
+            user_message: User message to process
+            
+        Yields:
+            Text chunks from LLM response
+            
+        Raises:
+            OpenRouterError: If API call fails after retries
+        """
+        get_client().update_current_trace(
+            tags=["llm_call", "async_streaming", "generation"],
+            metadata={
+                "client": "LLMClient",
+                "streaming": True,
+                "async": True
+            }
+        )
+        try:
+            async for chunk in self._chat_stream_async_with_retries(
+                client=self._async_client,
+                model=self._model,
+                system_prompt=system_prompt,
+                user_message=user_message,
+            ):
+                yield chunk
+        except OpenRouterError as primary_error:
+            if not self._async_fallback_client:
+                raise
+            
+            logger.warning(
+                "Primary async LLM failed; falling back to async DeepSeek: %s",
+                primary_error,
+            )
+            try:
+                async for chunk in self._chat_stream_async_with_retries(
+                    client=self._async_fallback_client,
+                    model=self._fallback_model,
+                    system_prompt=system_prompt,
+                    user_message=user_message,
+                ):
+                    yield chunk
+            except OpenRouterError as fallback_error:
+                raise OpenRouterError(
+                    f"{self._model} (primary + fallback {self._fallback_model})",
+                    self._max_retries,
+                    fallback_error.last_error,
+                ) from fallback_error
+    
+    async def _chat_stream_async_with_retries(
+        self,
+        client: AsyncOpenAI,
+        model: str,
+        system_prompt: str,
+        user_message: str,
+    ):
+        """Async streaming with retry logic."""
+        last_error: Optional[Exception] = None
+        
+        for attempt in range(self._max_retries):
+            try:
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ],
+                    stream=True
+                )
+                
+                # Use async for to iterate without blocking
+                async for chunk in response:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+                return  # Success, exit retry loop
+                
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Async LLM streaming attempt %s/%s for model %s failed: %s",
+                    attempt + 1,
+                    self._max_retries,
+                    model,
+                    e,
+                )
+                if attempt < self._max_retries - 1:
+                    import asyncio
+                    delay = self._base_delay * (2**attempt)
+                    await asyncio.sleep(delay)
+        
+        raise OpenRouterError(model, self._max_retries, last_error)
     
     def chat_json(
         self,
