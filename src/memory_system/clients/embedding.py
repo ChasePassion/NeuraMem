@@ -1,4 +1,4 @@
-"""Embedding client for OpenRouter API."""
+"""Embedding client for OpenAI-compatible embedding APIs."""
 
 import time
 import logging
@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingClient:
-    """Embedding model client using OpenRouter API.
+    """Embedding model client using OpenAI-compatible API.
     
-    Uses qwen/qwen3-embedding-4b model with 2560 dimensions.
+    Default configuration uses SiliconFlow/Qwen with 2560 dimensions.
     """
     
     def __init__(
@@ -23,11 +23,11 @@ class EmbeddingClient:
         base_url: str,
         model: str
     ):
-        """Initialize OpenRouter embedding client.
+        """Initialize embedding client.
         
         Args:
-            api_key: OpenRouter API key
-            base_url: Base URL for OpenRouter API
+            api_key: API key for the embedding service
+            base_url: Base URL for the embedding API
             model: Model ID for embeddings
         """
         self._client = OpenAI(api_key=api_key, base_url=base_url)

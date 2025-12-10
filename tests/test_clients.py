@@ -173,7 +173,7 @@ class TestLLMClient:
             assert result["parsed_data"] == {}
     
     def test_chat_falls_back_to_deepseek_on_failure(self):
-        """Test that chat falls back to DeepSeek when OpenRouter fails."""
+        """Test that chat falls back to secondary provider when primary fails."""
         # Primary client fails all retries
         primary_client = MagicMock()
         primary_client.chat.completions.create.side_effect = [Exception("rate limit")] * 3

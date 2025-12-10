@@ -1,4 +1,4 @@
-"""LLM client for OpenRouter API with DeepSeek fallback."""
+"""LLM client with provider-agnostic fallback support."""
 
 import json
 import time
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMClient:
-    """LLM model client using OpenRouter API with optional DeepSeek fallback."""
+    """LLM model client with configurable primary and fallback providers."""
     
     def __init__(
         self,
@@ -31,7 +31,7 @@ class LLMClient:
             api_key: API key (default: DeepSeek)
             base_url: Base URL for API (default: DeepSeek)
             model: Model ID for LLM (default: deepseek-chat)
-            fallback_api_key: Optional fallback API key (OpenRouter)
+            fallback_api_key: Optional API key for fallback provider
             fallback_base_url: Optional fallback base URL
             fallback_model: Optional fallback model ID
         """
@@ -87,7 +87,7 @@ class LLMClient:
                 raise
             
             logger.warning(
-                "Primary OpenRouter LLM failed; falling back to DeepSeek: %s",
+                "Primary LLM failed; using fallback: %s",
                 primary_error,
             )
             try:
@@ -138,7 +138,7 @@ class LLMClient:
                 raise
             
             logger.warning(
-                "Primary OpenRouter LLM failed; falling back to DeepSeek: %s",
+                "Primary LLM failed; using fallback: %s",
                 primary_error,
             )
             try:
@@ -194,7 +194,7 @@ class LLMClient:
                 raise
             
             logger.warning(
-                "Primary async LLM failed; falling back to async DeepSeek: %s",
+                "Primary async LLM failed; using async fallback: %s",
                 primary_error,
             )
             try:

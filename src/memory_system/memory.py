@@ -28,14 +28,14 @@ logger = logging.getLogger(__name__)
 class MemoryRecord:
     """A memory record returned from search operations.
     
-    Simplified schema (v2):
+    Schema fields:
     - id: Record ID
     - user_id: User identifier
     - memory_type: "episodic" or "semantic"
     - ts: Unix timestamp of write time
     - chat_id: Conversation/thread identifier
-    - text: Main natural-language content (includes time, where, who, thing, reason)
-    - distance: Similarity score from search (0.0 = identical)
+    - text: Main natural-language content
+    - group_id: Narrative group ID (-1 = ungrouped)
     """
     id: int
     user_id: str
@@ -43,7 +43,7 @@ class MemoryRecord:
     ts: int
     chat_id: str
     text: str
-    distance: float = 0.0  # Similarity score from search
+    group_id: int = -1
 
 
 @dataclass
@@ -177,8 +177,6 @@ class Memory:
             
         Returns:
             List of newly added memory IDs
-            
-        Requirements: 2.1, 2.2, 2.3, 8.1
         """
         get_client().update_current_trace(
             session_id=self._generate_session_id(user_id, chat_id),
@@ -501,7 +499,7 @@ class Memory:
 
     
     def _hit_to_memory_record(self, hit: Dict[str, Any]) -> MemoryRecord:
-        """Convert a search hit to MemoryRecord (v2 schema)."""
+        """Convert a search hit to MemoryRecord."""
         return MemoryRecord(
             id=hit.get("id", 0),
             user_id=hit.get("user_id", ""),
@@ -509,7 +507,7 @@ class Memory:
             ts=hit.get("ts", 0),
             chat_id=hit.get("chat_id", ""),
             text=hit.get("text", ""),
-            distance=hit.get("distance", 0.0)
+            group_id=hit.get("group_id", -1)
         )
     
     @observe(as_type="agent", name="memory_assign_to_narrative_group")
@@ -568,8 +566,6 @@ class Memory:
             
         Returns:
             True if update succeeded
-            
-        Requirements: 8.3
         """
         if "text" not in data:
             logger.warning(f"Memory operation 'update' failed: memory_id={memory_id}, no 'text' field provided")
@@ -638,8 +634,6 @@ class Memory:
             
         Returns:
             True if deletion succeeded
-            
-        Requirements: 8.4
         """
         # 如果提供了user_id，先进行叙事组清理
         if user_id is not None:
@@ -671,8 +665,6 @@ class Memory:
             
         Returns:
             Number of deleted memories
-            
-        Requirements: 8.5
         """
         filter_expr = f'user_id == "{user_id}"'
         count = self._store.delete(filter_expr=filter_expr)
@@ -697,8 +689,6 @@ class Memory:
             
         Returns:
             ConsolidationStats with operation counts
-            
-        Requirements: 6.1, 6.6
         """
         get_client().update_current_trace(
             session_id=f"consolidate_{user_id or 'all'}_{int(time.time())}",
@@ -764,8 +754,6 @@ class Memory:
         """Create semantic memories from extracted facts.
         
         In v2 schema, all information is stored in the text field.
-        
-        Requirements: 6.6
         """
         user_id = source_memory.get("user_id", "")
         source_chat_id = source_memory.get("chat_id", "")

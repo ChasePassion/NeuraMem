@@ -19,18 +19,24 @@ logger = logging.getLogger(__name__)
 class MilvusStore:
     """Milvus vector store wrapper for memory operations.
     
-    Provides CRUD operations for the memories collection with
-    support for vector similarity search.
+    Provides CRUD operations for the memories collection with support for
+    vector similarity search and narrative grouping.
     
-    Simplified schema (v2):
+    **Main Collection Schema (v2)**:
     - id: INT64, primary key, auto_id
     - user_id: VARCHAR(128), user identifier
     - memory_type: VARCHAR(32), "episodic" or "semantic"
     - ts: INT64, Unix timestamp of write time
     - chat_id: VARCHAR(128), conversation/thread identifier
-    - text: VARCHAR(65535), main natural-language content used for embedding and search
-            (includes time, where, who, thing, reason)
-    - vector: FLOAT_VECTOR(2560), embedding vector for similarity search
+    - text: VARCHAR(65535), natural-language content for embedding/search
+    - vector: FLOAT_VECTOR(2560), embedding vector
+    - group_id: INT64, narrative group ID (-1 = ungrouped)
+    
+    **Groups Collection Schema** (per-user: ``groups_{user_id}``):
+    - group_id: INT64, primary key, auto_id
+    - user_id: VARCHAR(128)
+    - centroid_vector: FLOAT_VECTOR(2560)
+    - size: INT64, member count
     """
     
     # Schema field definitions (simplified v2)
