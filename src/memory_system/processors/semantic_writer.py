@@ -8,7 +8,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
 
-from prompts import SEMANTIC_MEMORY_WRITER_PROMPT
+from ..prompts import SEMANTIC_MEMORY_WRITER_PROMPT
 from ..clients.llm import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -69,15 +69,16 @@ class SemanticWriter:
         }
         
         # Call LLM for batch extraction
-        response = self._llm.chat_json(
+        result = self._llm.chat_json(
             system_prompt=self._prompt,
             user_message=user_message,
             default=default_response
         )
         
-        # Parse response
-        write_semantic = response.get("write_semantic", False)
-        raw_facts = response.get("facts", [])
+        # Parse response - chat_json returns {"parsed_data": {...}, "raw_response": ..., ...}
+        parsed = result.get("parsed_data", {})
+        write_semantic = parsed.get("write_semantic", False)
+        raw_facts = parsed.get("facts", [])
         
         # Ensure facts are strings
         facts = [str(f) for f in raw_facts if f]

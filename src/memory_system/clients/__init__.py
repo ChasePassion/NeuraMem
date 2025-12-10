@@ -3,12 +3,12 @@
 from .embedding import EmbeddingClient
 from .llm import LLMClient
 from .milvus_store import MilvusStore
-from ..exceptions import MilvusConnectionError, OpenRouterError
+from ..exceptions import MilvusConnectionError, LLMCallError
 
 __all__ = [
     "EmbeddingClient",
     "LLMClient",
     "MilvusStore",
     "MilvusConnectionError",
-    "OpenRouterError",
+    "LLMCallError",
 ]

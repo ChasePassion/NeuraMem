@@ -6,7 +6,7 @@ from typing import List
 
 from openai import OpenAI
 
-from ..exceptions import OpenRouterError
+from ..exceptions import LLMCallError
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class EmbeddingClient:
             List of embedding vectors (each with 2560 dimensions)
             
         Raises:
-            OpenRouterError: If API call fails after retries
+            LLMCallError: If API call fails after retries
         """
         if not texts:
             return []
@@ -78,4 +78,4 @@ class EmbeddingClient:
                     delay = self._base_delay * (2 ** attempt)
                     time.sleep(delay)
         
-        raise OpenRouterError(self._model, self._max_retries, last_error)
+        raise LLMCallError(self._model, self._max_retries, last_error)

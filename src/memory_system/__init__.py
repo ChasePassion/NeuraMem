@@ -2,7 +2,7 @@
 
 from .config import MemoryConfig
 from .clients import EmbeddingClient, LLMClient, MilvusStore
-from .exceptions import MilvusConnectionError, OpenRouterError, MemoryOperationError
+from .exceptions import MilvusConnectionError, LLMCallError
 from .memory import Memory, MemoryRecord, ConsolidationStats
 
 __all__ = [
@@ -17,6 +17,5 @@ __all__ = [
     "MilvusStore",
     # Exceptions
     "MilvusConnectionError",
-    "OpenRouterError",
-    "MemoryOperationError",
+    "LLMCallError",
 ]

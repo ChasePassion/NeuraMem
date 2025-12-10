@@ -9,14 +9,9 @@ import time
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
-import sys
-import os
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from ..clients.llm import LLMClient
-from prompts import EPISODIC_MEMORY_MANAGER
+from ..prompts import EPISODIC_MEMORY_MANAGER
 
 from langfuse import observe, get_client
 
@@ -83,7 +78,7 @@ class EpisodicMemoryManager:
             }
         )
         
-        # 构造完整对话轮次
+        # 构造完整对话轮�?
         current_turn = {
             "user": user_text,
             "assistant": assistant_text
@@ -105,7 +100,7 @@ class EpisodicMemoryManager:
         # 提取解析后的数据
         response = llm_response["parsed_data"]
         
-        # 转换为操作列表
+        # 转换为操作列�?
         operations = []
         
         # 处理添加操作

@@ -24,8 +24,8 @@ class MilvusConnectionError(Exception):
         super().__init__(f"Failed to connect to Milvus at {uri}: {original_error}")
 
 
-class OpenRouterError(Exception):
-    """Raised when OpenRouter API call fails after retries.
+class LLMCallError(Exception):
+    """Raised when LLM API call fails after retries.
     
     Attributes:
         model: The model ID that was being called
@@ -34,7 +34,7 @@ class OpenRouterError(Exception):
     """
     
     def __init__(self, model: str, attempts: int, last_error: Exception):
-        """Initialize OpenRouterError.
+        """Initialize LLMCallError.
         
         Args:
             model: Model ID that failed
@@ -45,31 +45,5 @@ class OpenRouterError(Exception):
         self.attempts = attempts
         self.last_error = last_error
         super().__init__(
-            f"OpenRouter API failed for {model} after {attempts} attempts: {last_error}"
+            f"LLM API call failed for {model} after {attempts} attempts: {last_error}"
         )
-
-
-class MemoryOperationError(Exception):
-    """Raised when a memory operation fails.
-    
-    Attributes:
-        operation: The operation that failed (add, search, update, delete, etc.)
-        user_id: The user ID involved in the operation
-        details: Additional details about the failure
-    """
-    
-    def __init__(self, operation: str, user_id: str, details: str = ""):
-        """Initialize MemoryOperationError.
-        
-        Args:
-            operation: Name of the failed operation
-            user_id: User ID involved
-            details: Additional error details
-        """
-        self.operation = operation
-        self.user_id = user_id
-        self.details = details
-        message = f"Memory operation '{operation}' failed for user '{user_id}'"
-        if details:
-            message += f": {details}"
-        super().__init__(message)

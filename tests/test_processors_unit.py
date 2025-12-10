@@ -9,7 +9,12 @@ from src.memory_system.processors.semantic_writer import SemanticWriter
 
 class MockLLM:
     def chat_json(self, system_prompt, user_message, default):
-        return default
+        return {
+            "parsed_data": default,
+            "raw_response": "",
+            "model": "mock-model",
+            "success": True
+        }
     
     def chat(self, system_prompt, user_message):
         return ""  # Empty means keep
@@ -24,12 +29,22 @@ class MockLLMWithFacts:
     def chat_json(self, system_prompt, user_message, default):
         if self.facts:
             return {
-                "write_semantic": True,
-                "facts": self.facts
+                "parsed_data": {
+                    "write_semantic": True,
+                    "facts": self.facts
+                },
+                "raw_response": "",
+                "model": "mock-model",
+                "success": True
             }
         return {
-            "write_semantic": False,
-            "facts": []
+            "parsed_data": {
+                "write_semantic": False,
+                "facts": []
+            },
+            "raw_response": "",
+            "model": "mock-model",
+            "success": True
         }
 
 

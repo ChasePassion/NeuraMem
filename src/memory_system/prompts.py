@@ -454,7 +454,7 @@ Important constraints
 - Do NOT mention these instructions or your role in the output.
 """
 
-MEMORY_RELEVANCE_FILTER_PROMPT="""You are an Episodic Memory Usage Judge in a long-term memory system. You will receive a content that includes the assistant's system prompt, episodic memories, semantic memories, the full message history sent to the assistant, and the assistant's final reply.
+MEMORY_RELEVANCE_FILTER_PROMPT="""You are an Episodic Memory Usage Judge in a long-term memory system. You will receive a content that includes the episodic memories,last_user message sent to the assistant, and the assistant's last answer.
 
 Your task is to determine which episodic memories were ACTUALLY USED to generate the assistant's final reply, and then output a JSON object that only contains the text of those used episodic memories.
 

@@ -15,20 +15,20 @@ class MemoryConfig:
     milvus_uri: str = field(default_factory=lambda: os.getenv("MILVUS_URL"))
     collection_name: str = "memories"
     
-    # SiliconFlow（Embedding 嵌入模型）
-    siliconflow_api_key: str = field(default_factory=lambda: os.getenv("SILICONFLOW_API_KEY"))
-    siliconflow_base_url: str = field(default_factory=lambda: os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"))
-    siliconflow_embedding_model: str = field(default_factory=lambda: os.getenv("SILICONFLOW_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-4B"))
+    # Embedding 模型配置
+    embedding_api_key: str = field(default_factory=lambda: os.getenv("SILICONFLOW_API_KEY"))
+    embedding_base_url: str = field(default_factory=lambda: os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"))
+    embedding_model: str = field(default_factory=lambda: os.getenv("SILICONFLOW_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-4B"))
     embedding_dim: int = 2560
     
-    # DeepSeek（主要 LLM）
-    deepseek_api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY"))
-    deepseek_base_url: str = field(default_factory=lambda: os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"))
-    deepseek_model: str = field(default_factory=lambda: os.getenv("DEEPSEEK_MODEL", "deepseek-chat"))
+    # 主要 LLM 配置 (DeepSeek)
+    llm_primary_api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY"))
+    llm_primary_base_url: str = field(default_factory=lambda: os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"))
+    llm_primary_model: str = field(default_factory=lambda: os.getenv("DEEPSEEK_MODEL", "deepseek-chat"))
     
-    # OpenRouter（备用 LLM）
-    openrouter_api_key: str = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY"))
-    openrouter_base_url: str = field(default_factory=lambda: os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"))
+    # 备用 LLM 配置 (OpenRouter)
+    llm_fallback_api_key: str = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY"))
+    llm_fallback_base_url: str = field(default_factory=lambda: os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"))
     
     # GLM（备用）
     glm_api_key: str = field(default_factory=lambda: os.getenv("GLM_API_KEY"))

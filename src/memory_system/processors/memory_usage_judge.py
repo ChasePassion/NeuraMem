@@ -10,6 +10,7 @@ import logging
 from typing import List, Dict, Any
 
 from ..clients import LLMClient
+from ..prompts import MEMORY_RELEVANCE_FILTER_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -32,20 +33,19 @@ class MemoryUsageJudge:
     
     def judge_used_memories(
         self,
-        system_prompt: str,
         episodic_memories: List[str],
-        semantic_memories: List[str],
-        message_history: List[Dict[str, str]],
-        final_reply: str
+        last_user: str,
+        last_assistant: str
     ) -> List[str]:
         """Judge which episodic memories were actually used in the final reply.
         
+        Only uses the most recent user message and assistant reply to determine
+        which episodic memories were actually utilized in generating the response.
+        
         Args:
-            system_prompt: The system prompt sent to the assistant
             episodic_memories: List of episodic memory texts that were retrieved
-            semantic_memories: List of semantic memory texts that were retrieved
-            message_history: Full message history sent to the assistant
-            final_reply: The assistant's final reply
+            last_user: The most recent user message
+            last_assistant: The assistant's complete reply to that message
             
         Returns:
             List of episodic memory texts that were actually used
@@ -54,17 +54,14 @@ class MemoryUsageJudge:
             return []
         
         try:
-            # Prepare input data according to MEMORY_RELEVANCE_FILTER_PROMPT requirements
+            # Prepare input data with only the essential context
             input_data = {
-                "system_prompt": system_prompt,
                 "episodic_memories": episodic_memories,
-                "semantic_memories": semantic_memories,
-                "message_history": message_history,
-                "final_reply": final_reply
+                "last_user": last_user,
+                "last_assistant": last_assistant
             }
             
-            # Import the prompt
-            from prompts import MEMORY_RELEVANCE_FILTER_PROMPT
+            # Use MEMORY_RELEVANCE_FILTER_PROMPT imported at module level
             
             # Call LLM to judge which memories were used
             response = self._llm_client.chat_json(

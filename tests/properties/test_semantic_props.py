@@ -50,15 +50,25 @@ class DummyLLMForBatch:
         self.facts = facts or []
     
     def chat_json(self, system_prompt, user_message, default):
-        """Return batch consolidation response."""
+        """Return batch consolidation response in correct format."""
         if self.should_write and self.facts:
             return {
-                "write_semantic": True,
-                "facts": self.facts
+                "parsed_data": {
+                    "write_semantic": True,
+                    "facts": self.facts
+                },
+                "raw_response": "",
+                "model": "dummy-model",
+                "success": True
             }
         return {
-            "write_semantic": False,
-            "facts": []
+            "parsed_data": {
+                "write_semantic": False,
+                "facts": []
+            },
+            "raw_response": "",
+            "model": "dummy-model",
+            "success": True
         }
 
 
