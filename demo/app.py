@@ -470,54 +470,19 @@ class MemoryDemoApp:
             yield f"抱歉，我暂时无法生成回复。错误: {str(llm_error)}"
     
     async def _manage_memory_async(self, user_message: str, assistant_message: str, history: List[Dict[str, str]]) -> None:
-        """异步管理记忆到后台（不阻塞 Gradio 事件循环）。"""
-        try:
-            chat_id = f"chat_{int(time.time())}"
-            
-            # 优先使用异步版本，未实现时回退到线程池封装的同步接口
-            if hasattr(self.memory, "manage_async"):
-                await self.memory.manage_async(
-                    user_text=user_message,
-                    assistant_text=assistant_message,
-                    user_id=self.current_user_id,
-                    chat_id=chat_id
-                )
-            else:
-                await asyncio.to_thread(
-                    self.memory.manage,
-                    user_message,
-                    assistant_message,
-                    self.current_user_id,
-                    chat_id
-                )
-        except Exception as e:
-            logger.warning(f"Async memory manage failed: {e}")
+        """异步管理记忆到后台（不阻塞 Gradio 事件循环）。
+        
+        Deprecated: Use _process_memory instead.
+        """
+        await self._process_memory(user_message, assistant_message, history)
 
     async def _manage_memory_async_with_queue(self, user_message: str, response_queue: asyncio.Queue, history: List[Dict[str, str]]) -> None:
-        """异步管理记忆到后台（使用队列获取完整回复，确保在流式输出结束后调用）。"""
-        try:
-            # 从队列获取完整回复
-            assistant_message = await response_queue.get()
-            chat_id = f"chat_{int(time.time())}"
-            
-            # 优先使用异步版本，未实现时回退到线程池封装的同步接口
-            if hasattr(self.memory, "manage_async"):
-                await self.memory.manage_async(
-                    user_text=user_message,
-                    assistant_text=assistant_message,
-                    user_id=self.current_user_id,
-                    chat_id=chat_id
-                )
-            else:
-                await asyncio.to_thread(
-                    self.memory.manage,
-                    user_message,
-                    assistant_message,
-                    self.current_user_id,
-                    chat_id
-                )
-        except Exception as e:
-            logger.warning(f"Async memory manage with queue failed: {e}")
+        """异步管理记忆到后台（使用队列获取完整回复）。
+        
+        Deprecated: Use _process_memory instead after awaiting queue.get().
+        """
+        assistant_message = await response_queue.get()
+        await self._process_memory(user_message, assistant_message, history)
 
     async def _process_memory_async(
         self,
@@ -527,55 +492,69 @@ class MemoryDemoApp:
         relevant_memories: Dict[str, List[MemoryRecord]],
         full_context: str
     ) -> None:
-        """异步处理记忆：判断使用 → 叙事分组 → manage"""
+        """异步处理记忆（带使用判断和叙事分组）。
+        
+        Deprecated: Use _process_memory with run_usage_judge=True instead.
+        """
+        assistant_message = await response_queue.get()
+        await self._process_memory(
+            user_message, assistant_message, history_messages,
+            relevant_memories=relevant_memories, run_usage_judge=True
+        )
+
+    async def _process_memory(
+        self,
+        user_message: str,
+        assistant_message: str,
+        history_messages: List[Dict[str, str]],
+        relevant_memories: Optional[Dict[str, List[MemoryRecord]]] = None,
+        run_usage_judge: bool = False
+    ) -> None:
+        """统一的记忆处理入口 - 只做编排。
+        
+        Args:
+            user_message: 用户消息
+            assistant_message: 助手回复
+            history_messages: 历史消息列表
+            relevant_memories: 可选，相关记忆（用于 usage judge）
+            run_usage_judge: 是否执行使用判断和叙事分组
+        """
         try:
-            # 1. 从队列获取完整回复
-            assistant_message = await response_queue.get()
+            # 1. 可选：判断使用 + 叙事分组
+            if run_usage_judge and relevant_memories:
+                episodic_texts = [mem.text for mem in relevant_memories.get("episodic", [])]
+                
+                if episodic_texts:
+                    used_episodic_texts = await asyncio.to_thread(
+                        self.memory._memory_usage_judge.judge_used_memories,
+                        episodic_memories=episodic_texts,
+                        last_user=user_message,
+                        last_assistant=assistant_message
+                    )
+                    
+                    used_memory_ids = [
+                        mem.id for mem in relevant_memories.get("episodic", [])
+                        if mem.text in used_episodic_texts
+                    ]
+                    
+                    if used_memory_ids:
+                        await asyncio.to_thread(
+                            self.memory.assign_to_narrative_group,
+                            memory_ids=used_memory_ids,
+                            user_id=self.current_user_id
+                        )
+                        logger.info(f"Assigned {len(used_memory_ids)} episodic memories to narrative groups")
             
-            # 2. 调用 MemoryUsageJudge 判断哪些情景记忆被使用
-            episodic_texts = [mem.text for mem in relevant_memories.get("episodic", [])]
-            
-            used_episodic_texts = await asyncio.to_thread(
-                self.memory._memory_usage_judge.judge_used_memories,
-                episodic_memories=episodic_texts,
-                last_user=user_message,
-                last_assistant=assistant_message
-            )
-            
-            # 3. 找出被使用的情景记忆的 ID
-            used_memory_ids = []
-            for mem in relevant_memories.get("episodic", []):
-                if mem.text in used_episodic_texts:
-                    used_memory_ids.append(mem.id)
-            
-            # 4. 对被使用的情景记忆执行叙事分组
-            if used_memory_ids:
-                await asyncio.to_thread(
-                    self.memory.assign_to_narrative_group,
-                    memory_ids=used_memory_ids,
-                    user_id=self.current_user_id
-                )
-                logger.info(f"Assigned {len(used_memory_ids)} episodic memories to narrative groups")
-            
-            # 5. 执行 manage 管理记忆
+            # 2. 执行记忆管理
             chat_id = f"chat_{int(time.time())}"
-            if hasattr(self.memory, "manage_async"):
-                await self.memory.manage_async(
-                    user_text=user_message,
-                    assistant_text=assistant_message,
-                    user_id=self.current_user_id,
-                    chat_id=chat_id
-                )
-            else:
-                await asyncio.to_thread(
-                    self.memory.manage,
-                    user_message,
-                    assistant_message,
-                    self.current_user_id,
-                    chat_id
-                )
+            await self.memory.manage_async(
+                user_text=user_message,
+                assistant_text=assistant_message,
+                user_id=self.current_user_id,
+                chat_id=chat_id
+            )
         except Exception as e:
-            logger.warning(f"Async memory processing failed: {e}")
+            logger.warning(f"Memory processing failed: {e}")
 
     
     def _build_conversation_context(self, message: str, history: List[Dict[str, str]]) -> str:

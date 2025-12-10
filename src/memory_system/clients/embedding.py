@@ -1,12 +1,12 @@
 """Embedding client for OpenAI-compatible embedding APIs."""
 
-import time
 import logging
 from typing import List
 
 from openai import OpenAI
 
 from ..exceptions import LLMCallError
+from ..utils.retry import RetryExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -56,26 +56,19 @@ class EmbeddingClient:
         if not texts:
             return []
         
-        last_error = None
+        executor = RetryExecutor(
+            max_retries=self._max_retries,
+            base_delay=self._base_delay,
+            model=self._model,
+            operation="embedding"
+        )
         
-        for attempt in range(self._max_retries):
-            try:
-                response = self._client.embeddings.create(
-                    model=self._model,
-                    input=texts
-                )
-                # Extract embeddings in order
-                embeddings = [item.embedding for item in response.data]
-                return embeddings
-                
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    f"Embedding API attempt {attempt + 1}/{self._max_retries} failed: {e}"
-                )
-                
-                if attempt < self._max_retries - 1:
-                    delay = self._base_delay * (2 ** attempt)
-                    time.sleep(delay)
+        def do_encode():
+            response = self._client.embeddings.create(
+                model=self._model,
+                input=texts
+            )
+            return [item.embedding for item in response.data]
         
-        raise LLMCallError(self._model, self._max_retries, last_error)
+        return executor.execute(do_encode)
+
