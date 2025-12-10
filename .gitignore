@@ -329,25 +329,3 @@ model_cache/
 *.safetensors
 *.pt
 *.pth
-
-# =============================================================================
-# CUSTOM CONFIGURATION TEMPLATES
-# =============================================================================
-# Keep template files but ignore actual configs
-config.template.py
-config.example.py
-.env.template
-.env.example
-
-# =============================================================================
-# FINAL WARNING
-# =============================================================================
-# IMPORTANT: This .gitignore file protects sensitive API keys and credentials.
-# The current config.py file contains hardcoded API keys and should be refactored
-# to use environment variables. Consider the following security improvements:
-#
-# 1. Move API keys to environment variables
-# 2. Use a config template file (config.template.py)
-# 3. Add config.example.py to repository with placeholder values
-# 4. Never commit actual API keys or secrets
-# 5. Rotate any exposed API keys immediately
