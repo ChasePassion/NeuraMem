@@ -1,13 +1,13 @@
 """LLM client with provider-agnostic fallback support."""
 
 import json
-import time
 import logging
 from typing import Dict, Any, Optional
 
 from openai import OpenAI, AsyncOpenAI
 
 from ..exceptions import LLMCallError
+from ..utils.retry import RetryExecutor
 from langfuse import observe, get_client
 
 logger = logging.getLogger(__name__)
@@ -219,41 +219,29 @@ class LLMClient:
         system_prompt: str,
         user_message: str,
     ):
-        """Async streaming with retry logic."""
-        last_error: Optional[Exception] = None
+        """Async streaming with retry logic using RetryExecutor."""
+        executor = RetryExecutor(
+            max_retries=self._max_retries,
+            base_delay=self._base_delay,
+            model=model,
+            operation="async_stream"
+        )
         
-        for attempt in range(self._max_retries):
-            try:
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_message},
-                    ],
-                    stream=True
-                )
-                
-                # Use async for to iterate without blocking
-                async for chunk in response:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        yield chunk.choices[0].delta.content
-                return  # Success, exit retry loop
-                
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "Async LLM streaming attempt %s/%s for model %s failed: %s",
-                    attempt + 1,
-                    self._max_retries,
-                    model,
-                    e,
-                )
-                if attempt < self._max_retries - 1:
-                    import asyncio
-                    delay = self._base_delay * (2**attempt)
-                    await asyncio.sleep(delay)
+        async def do_stream():
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                stream=True
+            )
+            async for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
         
-        raise LLMCallError(model, self._max_retries, last_error)
+        async for item in executor.stream_async(do_stream):
+            yield item
     
     def chat_json(
         self,
@@ -345,33 +333,25 @@ class LLMClient:
         system_prompt: str,
         user_message: str,
     ) -> str:
-        """Call a specific client with retries."""
-        last_error: Optional[Exception] = None
+        """Call a specific client with retries using RetryExecutor."""
+        executor = RetryExecutor(
+            max_retries=self._max_retries,
+            base_delay=self._base_delay,
+            model=model,
+            operation="chat"
+        )
         
-        for attempt in range(self._max_retries):
-            try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_message},
-                    ],
-                )
-                return response.choices[0].message.content
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "LLM API attempt %s/%s for model %s failed: %s",
-                    attempt + 1,
-                    self._max_retries,
-                    model,
-                    e,
-                )
-                if attempt < self._max_retries - 1:
-                    delay = self._base_delay * (2**attempt)
-                    time.sleep(delay)
+        def do_chat():
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+            )
+            return response.choices[0].message.content
         
-        raise LLMCallError(model, self._max_retries, last_error)
+        return executor.execute(do_chat)
     
     def _chat_stream_with_retries(
         self,
@@ -380,37 +360,25 @@ class LLMClient:
         system_prompt: str,
         user_message: str,
     ):
-        """Call a specific client with retries for streaming."""
-        last_error: Optional[Exception] = None
+        """Call a specific client with retries for streaming using RetryExecutor."""
+        executor = RetryExecutor(
+            max_retries=self._max_retries,
+            base_delay=self._base_delay,
+            model=model,
+            operation="stream"
+        )
         
-        for attempt in range(self._max_retries):
-            try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_message},
-                    ],
-                    stream=True  # Enable streaming
-                )
-                
-                # Yield content chunks from the stream
-                for chunk in response:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        yield chunk.choices[0].delta.content
-                return  # Success, exit the retry loop
-                
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "LLM API streaming attempt %s/%s for model %s failed: %s",
-                    attempt + 1,
-                    self._max_retries,
-                    model,
-                    e,
-                )
-                if attempt < self._max_retries - 1:
-                    delay = self._base_delay * (2**attempt)
-                    time.sleep(delay)
+        def do_stream():
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                stream=True
+            )
+            for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
         
-        raise LLMCallError(model, self._max_retries, last_error)
+        yield from executor.stream(do_stream)

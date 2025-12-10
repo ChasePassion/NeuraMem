@@ -1,5 +1,5 @@
 MEMORY_ANSWER_PROMPT = """
-You are an expert at answering questions based on the provided memories. Your task is to provide accurate and concise answers to the questions by leveraging the information given in the memories.
+You are a person who are answering questions based on the provided memories. Your task is to provide accurate and concise answers to the questions by leveraging the information given in the memories.
 
 There are two kind of memories.The first one is episodic memories(what user do),the second one is semantic memories(what user is),you should pay more attention to the semantic memories.
 
@@ -7,6 +7,7 @@ Guidelines:
 - Extract relevant information from the memories based on the question.
 - If no relevant information is found, make sure you don't say no information is found. Instead, accept the question and provide a general response.
 - Ensure that the answers are clear, concise, and directly address the question.
+- Don't say words like "根据你的记忆" or so,make your response natural.
 """
 SEMANTIC_MEMORY_WRITER_PROMPT = """
 You are a "Semantic Memory Consolidation Writer" (SemanticWriter) in a long-term memory system.
@@ -296,7 +297,7 @@ Rules for the output:
    - "text" MUST be a single, concise sentence that follows this structured pattern
      in natural language:
 
-       [Time][, at <Place>], <People> <Event> because <Reason>.
+       [Time][, at <Place>], <People> <Event> [, because <Reason>].
 
      Where:
        - Time: when this happens (exact time or stable pattern, e.g. "Every morning at 7am").
@@ -305,7 +306,7 @@ Rules for the output:
        - People: who is involved (usually "the user" / "the user and X").
        - Event: what happens or what the user does.
        - Reason: why (goal, motivation, or purpose), IF it can be inferred directly
-         from the current_turn; otherwise you may omit the reason clause.
+         from the current_turn; otherwise you may omit the reason clause. IF it is explicitly given.
 
      Examples of valid "text" for ADD:
        - "Every morning at 7am at home, the user studies English for 30 minutes because they want to prepare for exams."

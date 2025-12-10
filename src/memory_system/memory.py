@@ -3,7 +3,7 @@
 Provides a mem0-style interface for memory operations including
 add, search, update, delete, reset, and consolidate.
 """
-
+import numpy as np
 import asyncio
 import logging
 import time
@@ -165,8 +165,11 @@ class Memory:
     ) -> List[int]:
         """Manage memories with CRUD operations based on conversation.
         
-        Processes conversation through EpisodicMemoryManager to determine
-        add, update, or delete operations on episodic memories.
+        Synchronous wrapper around manage_async(). Use this in non-async contexts
+        like CLI scripts or thread pools.
+        
+        Note: In async environments (Gradio, FastAPI, Notebooks), use manage_async()
+        directly instead of this method.
         
         Args:
             user_text: User input text
@@ -178,96 +181,11 @@ class Memory:
         Returns:
             List of newly added memory IDs
         """
-        get_client().update_current_trace(
-            session_id=self._generate_session_id(user_id, chat_id),
-            user_id=user_id,
-            tags=["memory_manage", "episodic"],
-            metadata={
-                "operation": "manage_memory",
-                "chat_id": chat_id,
-                "user_text_length": len(user_text),
-                "assistant_text_length": len(assistant_text)
-            }
+        return asyncio.run(
+            self.manage_async(user_text, assistant_text, user_id, chat_id, metadata)
         )
-        
-        # 1. Query user all episodic memories (不限制数量)
-        episodic_filter = f'user_id == "{user_id}" and memory_type == "episodic"'
-        episodic_memories = self._store.query(filter_expr=episodic_filter, limit=10000)
-        
-        # 2. 调用记忆管理器
-        result = self._memory_manager.manage_memories(
-            user_text=user_text,
-            assistant_text=assistant_text,
-            episodic_memories=episodic_memories
-        )
-        
-        # 3. 执行CRUD操作
-        added_ids = []
-        
-        # 处理删除操作
-        for op in result.operations:
-            if op.operation_type == "delete":
-                self.delete(op.memory_id, user_id)
-        
-        # 处理更新操作
-        for op in result.operations:
-            if op.operation_type == "update":
-                self.update(op.memory_id, {"text": op.text}, user_id)
-        
-        # 处理添加操作
-        add_operations = [op for op in result.operations if op.operation_type == "add"]
-        if add_operations:
-            add_texts = [op.text for op in add_operations]
-            embeddings = self._embedding_client.encode(add_texts)
-            
-            current_ts = int(time.time())
-            entities = []
-            
-            for i, text in enumerate(add_texts):
-                entity = {
-                    "user_id": user_id,
-                    "memory_type": "episodic",
-                    "ts": current_ts,
-                    "chat_id": chat_id,
-                    "text": text,
-                    "vector": embeddings[i],
-                    "group_id": -1,
-                }
-                entities.append(entity)
-            
-            added_ids = self._store.insert(entities)
-        
-        # 记录最终的操作结果到Langfuse
-        operation_summary = {
-            "added_count": len(added_ids),
-            "updated_count": len([op for op in result.operations if op.operation_type == 'update']),
-            "deleted_count": len([op for op in result.operations if op.operation_type == 'delete']),
-            "total_operations": len(result.operations),
-            "decision_trace_available": True
-        }
-        
-        get_client().update_current_trace(
-            output={
-                "operation_summary": operation_summary,
-                "added_memory_ids": added_ids,
-                "execution_success": True
-            },
-            metadata={
-                "episodic_memories_processed": len(episodic_memories),
-                "final_operation_counts": operation_summary
-            }
-        )
-        
-        logger.info(
-            f"Memory operation 'manage': type=episodic, user_id={user_id}, "
-            f"chat_id={chat_id}, added={len(added_ids)}, "
-            f"updated={len([op for op in result.operations if op.operation_type == 'update'])}, "
-            f"deleted={len([op for op in result.operations if op.operation_type == 'delete'])}"
-        )
-        
-        return added_ids
 
-    @observe(as_type="agent")
+    @observe(as_type="agent", name="memory_manage_async_operation")
     async def manage_async(
         self,
         user_text: str,
@@ -276,7 +194,24 @@ class Memory:
         chat_id: str,
         metadata: Optional[Dict[str, Any]] = None
     ) -> List[int]:
-        """Async variant of manage that offloads blocking steps to a thread pool."""
+        """Manage memories with CRUD operations based on conversation (async).
+        
+        Core implementation that offloads blocking operations to thread pool.
+        Processes conversation through EpisodicMemoryManager to determine
+        add, update, or delete operations on episodic memories.
+        
+        This is the preferred method in async environments (Gradio, FastAPI, etc.).
+        
+        Args:
+            user_text: User input text
+            assistant_text: Assistant response text
+            user_id: User identifier
+            chat_id: Conversation/thread identifier
+            metadata: Optional additional metadata (ignored in v2 schema)
+            
+        Returns:
+            List of newly added memory IDs
+        """
         get_client().update_current_trace(
             session_id=self._generate_session_id(user_id, chat_id),
             user_id=user_id,
@@ -368,7 +303,6 @@ class Memory:
         Returns:
             Dict with separated episodic and semantic memories
         """
-        import numpy as np
         
         get_client().update_current_trace(
             session_id=f"search_{user_id}_{int(time.time())}",
@@ -435,7 +369,7 @@ class Memory:
         for hit in seeds:
             g_id = hit.get("group_id")
             # 只有group_id >= 0的才扩展，-1表示未分组，不扩展
-            if g_id is None or g_id == -1:
+            if g_id == -1:
                 continue
             expansion_group_ids.add(g_id)
         
