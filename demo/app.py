@@ -23,6 +23,7 @@ from langfuse import observe, get_client
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.memory_system import Memory, MemoryConfig, MemoryRecord, ConsolidationStats
+from src.memory_system.prompts import MEMORY_ANSWER_PROMPT
 
 
 # Setup logger
@@ -439,16 +440,8 @@ class MemoryDemoApp:
     
     def _generate_response(self, context: str, messages: List[Dict]) -> str:
         """使用LLM生成回复。"""
-        # 导入 MEMORY_ANSWER_PROMPT
-        try:
-            from prompts import MEMORY_ANSWER_PROMPT
-            system_prompt = f"{MEMORY_ANSWER_PROMPT}\n\nUser ID: {self.current_user_id}\n\n{context}"
-        except ImportError:
-            system_prompt = f"""You are an AI assistant with long-term memory capabilities. User ID: {self.current_user_id}
-Please answer based on the user's messages and relevant memories. If there are relevant memories, reflect that you remember the user's information in your response.
-Maintain a friendly and natural conversation style.
-
-{context}"""
+        # Use MEMORY_ANSWER_PROMPT imported at module level
+        system_prompt = f"{MEMORY_ANSWER_PROMPT}\n\nUser ID: {self.current_user_id}\n\n{context}"
         
         try:
             # 获取最后一条用户消息
@@ -460,16 +453,8 @@ Maintain a friendly and natural conversation style.
     
     async def _generate_response_stream(self, context: str, messages: List[Dict]):
         """使用LLM流式生成回复。"""
-        # 导入 MEMORY_ANSWER_PROMPT
-        try:
-            from prompts import MEMORY_ANSWER_PROMPT
-            system_prompt = f"{MEMORY_ANSWER_PROMPT}\n\n{context}"
-        except ImportError:
-            system_prompt = f"""You are an AI assistant with long-term memory capabilities. User ID: {self.current_user_id}
-Please answer based on the user's messages and relevant memories. If there are relevant memories, reflect that you remember the user's information in your response.
-Maintain a friendly and natural conversation style.
-
-{context}"""
+        # Use MEMORY_ANSWER_PROMPT imported at module level
+        system_prompt = f"{MEMORY_ANSWER_PROMPT}\n\n{context}"
         
         try:
             # 获取最后一条用户消息
@@ -549,15 +534,12 @@ Maintain a friendly and natural conversation style.
             
             # 2. 调用 MemoryUsageJudge 判断哪些情景记忆被使用
             episodic_texts = [mem.text for mem in relevant_memories.get("episodic", [])]
-            semantic_texts = [mem.text for mem in relevant_memories.get("semantic", [])]
             
             used_episodic_texts = await asyncio.to_thread(
                 self.memory._memory_usage_judge.judge_used_memories,
-                system_prompt=full_context,
                 episodic_memories=episodic_texts,
-                semantic_memories=semantic_texts,
-                message_history=history_messages,
-                final_reply=assistant_message
+                last_user=user_message,
+                last_assistant=assistant_message
             )
             
             # 3. 找出被使用的情景记忆的 ID
@@ -594,31 +576,6 @@ Maintain a friendly and natural conversation style.
                 )
         except Exception as e:
             logger.warning(f"Async memory processing failed: {e}")
-
-    async def _add_to_memory_async(self, message: str, history: List[Dict[str, str]]) -> None:
-        """异步添加记忆到后台（不阻塞 Gradio 事件循环）。"""
-        try:
-            chat_id = f"chat_{int(time.time())}"
-            
-            # 构建完整的对话上下文用于记忆提取
-            conversation_context = self._build_conversation_context(message, history)
-            
-            # 优先使用异步版本，未实现时回退到线程池封装的同步接口
-            if hasattr(self.memory, "add_async"):
-                await self.memory.add_async(
-                    text=conversation_context,
-                    user_id=self.current_user_id,
-                    chat_id=chat_id
-                )
-            else:
-                await asyncio.to_thread(
-                    self.memory.add,
-                    conversation_context,
-                    self.current_user_id,
-                    chat_id
-                )
-        except Exception as e:
-            logger.warning(f"Async memory add failed: {e}")
 
     
     def _build_conversation_context(self, message: str, history: List[Dict[str, str]]) -> str:

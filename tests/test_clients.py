@@ -1,4 +1,4 @@
-"""Unit tests for infrastructure layer clients.
+﻿"""Unit tests for infrastructure layer clients.
 
 Tests for EmbeddingClient, LLMClient, and MilvusStore.
 """
@@ -7,7 +7,8 @@ import pytest
 import json
 from unittest.mock import Mock, patch, MagicMock
 
-from src.memory_system.clients.embedding import EmbeddingClient, OpenRouterError
+from src.memory_system.clients.embedding import EmbeddingClient
+from src.memory_system.exceptions import LLMCallError
 from src.memory_system.clients.llm import LLMClient
 from src.memory_system.clients.milvus_store import MilvusStore, MilvusConnectionError
 from src.memory_system.config import MemoryConfig
@@ -19,13 +20,13 @@ class TestEmbeddingClient:
     def test_dim_property_returns_2560(self):
         """Test that dim property returns correct dimension (2560)."""
         with patch("src.memory_system.clients.embedding.OpenAI"):
-            client = EmbeddingClient(api_key="test_key")
+            client = EmbeddingClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
             assert client.dim == 2560
     
     def test_encode_empty_list_returns_empty(self):
         """Test that encoding empty list returns empty list."""
         with patch("src.memory_system.clients.embedding.OpenAI"):
-            client = EmbeddingClient(api_key="test_key")
+            client = EmbeddingClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
             result = client.encode([])
             assert result == []
     
@@ -39,7 +40,7 @@ class TestEmbeddingClient:
         mock_openai.return_value.embeddings.create.return_value = mock_response
         
         with patch("src.memory_system.clients.embedding.OpenAI", mock_openai):
-            client = EmbeddingClient(api_key="test_key")
+            client = EmbeddingClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
             result = client.encode(["test text"])
             
             assert len(result) == 1
@@ -62,26 +63,26 @@ class TestEmbeddingClient:
         
         with patch("src.memory_system.clients.embedding.OpenAI", mock_openai):
             with patch("time.sleep"):  # Skip actual sleep
-                client = EmbeddingClient(api_key="test_key")
+                client = EmbeddingClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
                 result = client.encode(["test text"])
                 
                 assert len(result) == 1
                 assert mock_openai.return_value.embeddings.create.call_count == 3
     
     def test_encode_raises_after_max_retries(self):
-        """Test that encode raises OpenRouterError after max retries."""
+        """Test that encode raises LLMCallError after max retries."""
         mock_openai = Mock()
         mock_openai.return_value.embeddings.create.side_effect = Exception("API Error")
         
         with patch("src.memory_system.clients.embedding.OpenAI", mock_openai):
             with patch("time.sleep"):
-                client = EmbeddingClient(api_key="test_key")
+                client = EmbeddingClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
                 
-                with pytest.raises(OpenRouterError) as exc_info:
+                with pytest.raises(LLMCallError) as exc_info:
                     client.encode(["test text"])
                 
                 assert exc_info.value.attempts == 3
-                assert "qwen/qwen3-embedding-4b" in str(exc_info.value)
+                assert "test-model" in str(exc_info.value)
 
 
 class TestLLMClient:
@@ -99,7 +100,7 @@ class TestLLMClient:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         
         with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
-            client = LLMClient(api_key="test_key")
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
             result = client.chat("system prompt", "user message")
             
             assert result == "Test response"
@@ -116,10 +117,10 @@ class TestLLMClient:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         
         with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
-            client = LLMClient(api_key="test_key")
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
             result = client.chat_json("system prompt", "user message")
-            
-            assert result == {"key": "value", "number": 42}
+            assert result["success"] == True
+            assert result["parsed_data"] == {"key": "value", "number": 42}
     
     def test_chat_json_handles_markdown_code_block(self):
         """Test that chat_json() handles JSON wrapped in markdown code blocks."""
@@ -133,10 +134,10 @@ class TestLLMClient:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         
         with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
-            client = LLMClient(api_key="test_key")
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
             result = client.chat_json("system prompt", "user message")
-            
-            assert result == {"key": "value"}
+            assert result["success"] == True
+            assert result["parsed_data"] == {"key": "value"}
     
     def test_chat_json_returns_default_on_invalid_json(self):
         """Test that chat_json() returns default value on invalid JSON."""
@@ -150,11 +151,10 @@ class TestLLMClient:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         
         with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
-            client = LLMClient(api_key="test_key")
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
             default = {"default": True}
             result = client.chat_json("system prompt", "user message", default=default)
-            
-            assert result == default
+            assert result["parsed_data"] == default
     
     def test_chat_json_returns_empty_dict_on_invalid_json_no_default(self):
         """Test that chat_json() returns empty dict when no default provided."""
@@ -168,10 +168,9 @@ class TestLLMClient:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         
         with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
-            client = LLMClient(api_key="test_key")
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
             result = client.chat_json("system prompt", "user message")
-            
-            assert result == {}
+            assert result["parsed_data"] == {}
     
     def test_chat_falls_back_to_deepseek_on_failure(self):
         """Test that chat falls back to DeepSeek when OpenRouter fails."""
@@ -194,20 +193,23 @@ class TestLLMClient:
             "src.memory_system.clients.llm.OpenAI",
             side_effect=[primary_client, fallback_client],
         ) as mock_openai_ctor:
-            client = LLMClient(
-                api_key="primary",
-                fallback_api_key="deepseek_key",
-                fallback_base_url="https://api.deepseek.com",
-                fallback_model="deepseek-chat",
-            )
-            
-            result = client.chat("system prompt", "user message")
-            
-            # Verify primary exhausted retries, then fallback succeeded
-            assert primary_client.chat.completions.create.call_count == 3
-            fallback_client.chat.completions.create.assert_called_once()
-            assert result == "fallback response"
-            assert mock_openai_ctor.call_count == 2
+            with patch("src.memory_system.clients.llm.AsyncOpenAI"):
+                client = LLMClient(
+                    api_key="primary",
+                    base_url="https://api.primary.com",
+                    model="primary-model",
+                    fallback_api_key="deepseek_key",
+                    fallback_base_url="https://api.deepseek.com",
+                    fallback_model="deepseek-chat",
+                )
+                
+                result = client.chat("system prompt", "user message")
+                
+                # Verify primary exhausted retries, then fallback succeeded
+                assert primary_client.chat.completions.create.call_count == 3
+                fallback_client.chat.completions.create.assert_called_once()
+                assert result == "fallback response"
+                assert mock_openai_ctor.call_count == 2
 
 
 class TestMilvusStore:

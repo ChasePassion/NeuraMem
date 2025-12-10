@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional
 
 from openai import OpenAI, AsyncOpenAI
 
-from ..exceptions import OpenRouterError
+from ..exceptions import LLMCallError
 from langfuse import observe, get_client
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ class LLMClient:
             LLM response text
             
         Raises:
-            OpenRouterError: If API call fails after retries
+            LLMCallError: If API call fails after retries
         """
         get_client().update_current_trace(
             tags=["llm_call", "generation"],
@@ -82,7 +82,7 @@ class LLMClient:
                 system_prompt=system_prompt,
                 user_message=user_message,
             )
-        except OpenRouterError as primary_error:
+        except LLMCallError as primary_error:
             if not self._fallback_client:
                 raise
             
@@ -97,9 +97,9 @@ class LLMClient:
                     system_prompt=system_prompt,
                     user_message=user_message,
                 )
-            except OpenRouterError as fallback_error:
+            except LLMCallError as fallback_error:
                 # Surface combined failure context
-                raise OpenRouterError(
+                raise LLMCallError(
                     f"{self._model} (primary + fallback {self._fallback_model})",
                     self._max_retries,
                     fallback_error.last_error,
@@ -117,7 +117,7 @@ class LLMClient:
             Text chunks from LLM response
             
         Raises:
-            OpenRouterError: If API call fails after retries
+            LLMCallError: If API call fails after retries
         """
         get_client().update_current_trace(
             tags=["llm_call", "streaming", "generation"],
@@ -133,7 +133,7 @@ class LLMClient:
                 system_prompt=system_prompt,
                 user_message=user_message,
             )
-        except OpenRouterError as primary_error:
+        except LLMCallError as primary_error:
             if not self._fallback_client:
                 raise
             
@@ -148,9 +148,9 @@ class LLMClient:
                     system_prompt=system_prompt,
                     user_message=user_message,
                 )
-            except OpenRouterError as fallback_error:
+            except LLMCallError as fallback_error:
                 # Surface combined failure context
-                raise OpenRouterError(
+                raise LLMCallError(
                     f"{self._model} (primary + fallback {self._fallback_model})",
                     self._max_retries,
                     fallback_error.last_error,
@@ -171,7 +171,7 @@ class LLMClient:
             Text chunks from LLM response
             
         Raises:
-            OpenRouterError: If API call fails after retries
+            LLMCallError: If API call fails after retries
         """
         get_client().update_current_trace(
             tags=["llm_call", "async_streaming", "generation"],
@@ -189,7 +189,7 @@ class LLMClient:
                 user_message=user_message,
             ):
                 yield chunk
-        except OpenRouterError as primary_error:
+        except LLMCallError as primary_error:
             if not self._async_fallback_client:
                 raise
             
@@ -205,8 +205,8 @@ class LLMClient:
                     user_message=user_message,
                 ):
                     yield chunk
-            except OpenRouterError as fallback_error:
-                raise OpenRouterError(
+            except LLMCallError as fallback_error:
+                raise LLMCallError(
                     f"{self._model} (primary + fallback {self._fallback_model})",
                     self._max_retries,
                     fallback_error.last_error,
@@ -253,7 +253,7 @@ class LLMClient:
                     delay = self._base_delay * (2**attempt)
                     await asyncio.sleep(delay)
         
-        raise OpenRouterError(model, self._max_retries, last_error)
+        raise LLMCallError(model, self._max_retries, last_error)
     
     def chat_json(
         self,
@@ -288,7 +288,7 @@ class LLMClient:
                 "model": self._model,
                 "success": True
             }
-        except OpenRouterError:
+        except LLMCallError:
             raise
         except Exception as e:
             logger.error(f"Unexpected error in chat_json: {e}")
@@ -371,7 +371,7 @@ class LLMClient:
                     delay = self._base_delay * (2**attempt)
                     time.sleep(delay)
         
-        raise OpenRouterError(model, self._max_retries, last_error)
+        raise LLMCallError(model, self._max_retries, last_error)
     
     def _chat_stream_with_retries(
         self,
@@ -413,4 +413,4 @@ class LLMClient:
                     delay = self._base_delay * (2**attempt)
                     time.sleep(delay)
         
-        raise OpenRouterError(model, self._max_retries, last_error)
+        raise LLMCallError(model, self._max_retries, last_error)

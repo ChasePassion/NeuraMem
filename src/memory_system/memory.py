@@ -19,16 +19,9 @@ from .processors import (
     MemoryUsageJudge,
     NarrativeMemoryManager,
 )
+from .utils import normalize
 
 logger = logging.getLogger(__name__)
-
-
-def normalize(vec) -> np.ndarray:
-    """向量归一化"""
-    norm = np.linalg.norm(vec)
-    if norm == 0:
-        return vec
-    return vec / norm
 
 
 @dataclass
@@ -94,8 +87,6 @@ class Memory:
         
         # Initialize Langfuse client if available
         self._langfuse_client = self._create_langfuse_client()
-        # Cache availability flag to avoid global lookups in threads
-        self._langfuse_available = bool(globals().get("LANGFUSE_AVAILABLE", False))
         
         logger.info(
             f"Memory system initialized with collection '{self._config.collection_name}'"
@@ -104,19 +95,19 @@ class Memory:
     def _create_embedding_client(self) -> EmbeddingClient:
         """Factory method to create EmbeddingClient."""
         return EmbeddingClient(
-            api_key=self._config.siliconflow_api_key,
-            base_url=self._config.siliconflow_base_url,
-            model=self._config.siliconflow_embedding_model
+            api_key=self._config.embedding_api_key,
+            base_url=self._config.embedding_base_url,
+            model=self._config.embedding_model
         )
     
     def _create_llm_client(self) -> LLMClient:
         """Factory method to create LLMClient."""
         return LLMClient(
-            api_key=self._config.deepseek_api_key,
-            base_url=self._config.deepseek_base_url,
-            model=self._config.deepseek_model,
-            fallback_api_key=self._config.openrouter_api_key,
-            fallback_base_url=self._config.openrouter_base_url,
+            api_key=self._config.llm_primary_api_key,
+            base_url=self._config.llm_primary_base_url,
+            model=self._config.llm_primary_model,
+            fallback_api_key=self._config.llm_fallback_api_key,
+            fallback_base_url=self._config.llm_fallback_base_url,
             fallback_model=None
         )
     

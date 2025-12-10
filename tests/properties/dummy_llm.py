@@ -14,10 +14,19 @@ class DummyLLMClient:
         if default is None:
             default = {"add": [], "update": [], "delete": []}
 
+        def _wrap_response(data):
+            """Wrap response in the standard chat_json format."""
+            return {
+                "parsed_data": data,
+                "raw_response": json.dumps(data),
+                "model": "dummy-model",
+                "success": True
+            }
+
         try:
             data = json.loads(user_message)
         except Exception:
-            return default
+            return _wrap_response(default)
 
         # Special handling for EPISODIC_MEMORY_MANAGER format
         if isinstance(data, dict) and "current_turn" in data and "episodic_memories" in data:
@@ -36,12 +45,12 @@ class DummyLLMClient:
                 "谢谢", "thanks", "ok", "好的", "👍", "😊"
             }
             if lower.strip() in greeting_phrases or (len(lower.strip()) <= 8 and any(g in lower for g in greeting_phrases)):
-                return {"add": [], "update": [], "delete": []}
+                return _wrap_response({"add": [], "update": [], "delete": []})
             
             # Check for knowledge questions that should NOT be stored
             question_keywords = ["?", "？", "what", "how", "why", "who", "where", "什么", "吗"]
             if any(q in lower for q in question_keywords) and not any(keyword in lower for keyword in ["记住", "remember", "我是", "我叫", "我住", "我喜欢"]):
-                return {"add": [], "update": [], "delete": []}
+                return _wrap_response({"add": [], "update": [], "delete": []})
             
             # Check for personal information that should be stored
             positive_keywords = [
@@ -60,7 +69,7 @@ class DummyLLMClient:
                 if any(change_word in lower for change_word in ["现在", "已经", "变成", "changed", "now", "currently"]):
                     for i, existing_text in enumerate(existing_texts):
                         if any(keyword in existing_text.lower() for keyword in ["学生", "student", "工程师", "engineer"]):
-                            return {
+                            return _wrap_response({
                                 "add": [],
                                 "update": [{
                                     "id": existing_memories[i].get("id", 1),
@@ -68,26 +77,26 @@ class DummyLLMClient:
                                     "new_text": user_text
                                 }],
                                 "delete": []
-                            }
+                            })
                 
                 # Check for deletions (rare case)
                 if any(delete_word in lower for delete_word in ["删除", "delete", "忘记", "forget"]):
                     for i, existing_text in enumerate(existing_texts):
                         if any(keyword in existing_text.lower() for keyword in user_text.lower().split()):
-                            return {
+                            return _wrap_response({
                                 "add": [],
                                 "update": [],
                                 "delete": [{"id": existing_memories[i].get("id", 1)}]
-                            }
+                            })
                 
                 # Default: add new memory
-                return {
+                return _wrap_response({
                     "add": [{"text": user_text}],
                     "update": [],
                     "delete": []
-                }
+                })
             
-            return {"add": [], "update": [], "delete": []}
+            return _wrap_response({"add": [], "update": [], "delete": []})
 
         # For other prompts, just return the provided default to satisfy invariants
-        return default
+        return _wrap_response(default)

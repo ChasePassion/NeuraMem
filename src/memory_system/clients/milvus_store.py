@@ -217,55 +217,267 @@ class MilvusStore:
         
         return results
     
-    def update(self, id: int, data: Dict[str, Any], base_record: Optional[Dict[str, Any]] = None) -> bool:
-        """Update a memory record.
+    # ========== Groups Collection Operations ==========
+    
+    def _get_groups_collection_name(self, user_id: str) -> str:
+        """Get the groups collection name for a user."""
+        return f"groups_{user_id}"
+    
+    def create_groups_collection(self, user_id: str, dim: int = 2560) -> str:
+        """Create groups collection for a user if it doesn't exist.
         
         Args:
-            id: Record ID to update
-            data: Fields to update
-            base_record: Optional record payload already fetched (avoids a second query)
+            user_id: User identifier
+            dim: Vector dimension
+            
+        Returns:
+            Groups collection name
+        """
+        groups_collection_name = self._get_groups_collection_name(user_id)
+        
+        if self._client.has_collection(groups_collection_name):
+            logger.info(f"Groups collection '{groups_collection_name}' already exists")
+            return groups_collection_name
+        
+        # Build schema
+        fields = []
+        for name, dtype, params in self.GROUP_SCHEMA_FIELDS:
+            if name == "centroid_vector":
+                params = {"dim": dim}
+            field = FieldSchema(name=name, dtype=dtype, **params)
+            fields.append(field)
+        
+        schema = CollectionSchema(
+            fields=fields,
+            description=f"Narrative memory groups for user {user_id}",
+            enable_dynamic_field=True
+        )
+        
+        # Create collection with index
+        index_params = self._client.prepare_index_params()
+        index_params.add_index(
+            field_name="centroid_vector",
+            index_type="AUTOINDEX",
+            metric_type="IP"  # Inner product for normalized vectors
+        )
+        
+        self._client.create_collection(
+            collection_name=groups_collection_name,
+            schema=schema,
+            index_params=index_params
+        )
+        
+        logger.info(f"Created groups collection '{groups_collection_name}' with dim={dim}")
+        return groups_collection_name
+    
+    def search_groups(
+        self,
+        user_id: str,
+        vector: List[float],
+        limit: int = 1
+    ) -> List[Dict[str, Any]]:
+        """Search for similar groups by centroid vector.
+        
+        Args:
+            user_id: User identifier
+            vector: Query vector (normalized)
+            limit: Maximum results
+            
+        Returns:
+            List of matching groups with group_id, sim (distance), and size
+        """
+        groups_collection = self._get_groups_collection_name(user_id)
+        
+        if not self._client.has_collection(groups_collection):
+            return []
+        
+        results = self._client.search(
+            collection_name=groups_collection,
+            data=[vector],
+            anns_field="centroid_vector",
+            limit=limit,
+            search_params={"metric_type": "IP", "params": {"nprobe": 10}},
+            filter=f"user_id == '{user_id}'",
+            output_fields=["group_id", "size"],  # 显式请求主键字段
+        )
+        
+        hits = results[0] if results else []
+        groups = []
+        for hit in hits:
+            # MilvusClient search 返回的 hit 结构：
+            # - hit["id"] 或 hit.get("id") 用于访问主键（但主键字段名决定实际key）
+            # - 对于 groups 表，主键字段名是 "group_id"
+            # - entity 中包含 output_fields 请求的字段
+            entity = hit.get("entity", {})
+            # 优先从 entity 获取 group_id（显式请求的字段），否则尝试 hit["id"]
+            group_id = entity.get("group_id") or hit.get("id")
+            groups.append({
+                "group_id": group_id,
+                "sim": hit.get("distance", 0),
+                "size": entity.get("size", 0),
+            })
+        
+        return groups
+    
+    def insert_group(
+        self,
+        user_id: str,
+        centroid_vector: List[float],
+        size: int = 1
+    ) -> Optional[int]:
+        """Insert a new group.
+        
+        Args:
+            user_id: User identifier
+            centroid_vector: Initial centroid vector
+            size: Initial group size
+            
+        Returns:
+            group_id of inserted group, or None on failure
+        """
+        groups_collection = self._get_groups_collection_name(user_id)
+        
+        # Ensure collection exists
+        self.create_groups_collection(user_id, dim=len(centroid_vector))
+        
+        result = self._client.insert(
+            collection_name=groups_collection,
+            data=[{
+                "user_id": user_id,
+                "centroid_vector": centroid_vector,
+                "size": size,
+            }]
+        )
+        
+        primary_keys = result.get("ids", [])
+        if not primary_keys:
+            primary_keys = result.get("primary_keys", [])
+        
+        group_id = primary_keys[0] if primary_keys else None
+        
+        if group_id:
+            logger.info(f"Inserted group {group_id} for user {user_id}")
+        else:
+            logger.error(f"Failed to insert group for user {user_id}")
+        
+        return group_id
+    
+    def update_group(
+        self,
+        user_id: str,
+        group_id: int,
+        centroid_vector: Optional[List[float]] = None,
+        size: Optional[int] = None
+    ) -> bool:
+        """Update a group's centroid and/or size.
+        
+        Args:
+            user_id: User identifier
+            group_id: Group ID to update
+            centroid_vector: New centroid vector (optional)
+            size: New size (optional)
+            
+        Returns:
+            True if update succeeded
+        """
+        groups_collection = self._get_groups_collection_name(user_id)
+        
+        if not self._client.has_collection(groups_collection):
+            return False
+        
+        try:
+            # Fetch existing record
+            existing = self._client.query(
+                collection_name=groups_collection,
+                filter=f"group_id == {group_id}",
+                output_fields=["*"]
+            )
+            
+            if not existing:
+                logger.warning(f"Group {group_id} not found for update")
+                return False
+            
+            record = existing[0].copy()
+            
+            if centroid_vector is not None:
+                record["centroid_vector"] = centroid_vector
+            if size is not None:
+                record["size"] = size
+            
+            self._client.upsert(
+                collection_name=groups_collection,
+                data=[record]
+            )
+            
+            logger.info(f"Updated group {group_id}")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Failed to update group {group_id}: {e}")
+            return False
+    
+    def delete_group(self, user_id: str, group_id: int) -> bool:
+        """Delete a group.
+        
+        Args:
+            user_id: User identifier
+            group_id: Group ID to delete
+            
+        Returns:
+            True if delete succeeded
+        """
+        groups_collection = self._get_groups_collection_name(user_id)
+        
+        if not self._client.has_collection(groups_collection):
+            return False
+        
+        try:
+            self._client.delete(
+                collection_name=groups_collection,
+                filter=f"group_id == {group_id} and user_id == '{user_id}'"
+            )
+            logger.info(f"Deleted group {group_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to delete group {group_id}: {e}")
+            return False
+    
+    def update_memory_group_id(self, memory_id: int, group_id: int, user_id: str) -> bool:
+        """Update a memory's group_id field.
+        
+        Args:
+            memory_id: Memory ID to update
+            group_id: New group ID
+            user_id: User identifier
             
         Returns:
             True if update succeeded
         """
         try:
-            record = None
+            # Fetch existing record
+            existing = self._client.query(
+                collection_name=self._collection_name,
+                filter=f"id == {memory_id} and user_id == '{user_id}'",
+                output_fields=["*"]
+            )
             
-            # Prefer caller-provided base record (e.g., from search hit)
-            if base_record:
-                record = base_record.copy()
-            else:
-                # Fetch current record to preserve required fields
-                existing = self._client.query(
-                    collection_name=self._collection_name,
-                    filter=f"id in [{int(id)}]",
-                    output_fields=["*"]
-                )
-                if existing:
-                    record = existing[0].copy()
-            
-            if record is None:
-                logger.warning(f"Record {id} not found for update")
+            if not existing:
+                logger.warning(f"Memory {memory_id} not found for group_id update")
                 return False
             
-            # Merge fields and keep the same primary key
-            record.update(data)
-            record["id"] = id
+            record = existing[0].copy()
+            record["group_id"] = group_id
             
-            # Upsert keeps the primary key stable and avoids delete/reinsert races
             self._client.upsert(
                 collection_name=self._collection_name,
                 data=[record]
             )
             
-            # Make the change immediately visible
-            self._client.flush(collection_name=self._collection_name)
-            
-            logger.info(f"Updated record {id}")
+            logger.info(f"Updated memory {memory_id} group_id to {group_id}")
             return True
-        
+            
         except Exception as e:
-            logger.warning(f"Failed to update record {id}: {e}")
+            logger.warning(f"Failed to update memory {memory_id} group_id: {e}")
             return False
     
     def delete(
