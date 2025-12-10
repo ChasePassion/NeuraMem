@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, Path, Query
 
 from src.memory_system import Memory
 from src.api.deps import get_memory_system
@@ -12,7 +12,6 @@ from src.api.schemas import (
     SearchRequest,
     SearchResponse,
     MemoryResponse,
-    DeleteRequest,
     DeleteResponse,
     ResetRequest,
     ResetResponse,
@@ -106,15 +105,26 @@ async def search_memories(
 @router.delete("/{memory_id}", response_model=DeleteResponse)
 async def delete_memory(
     memory_id: int = Path(..., description="Memory ID to delete"),
-    request: DeleteRequest = None,
+    user_id: str = Query(..., description="User ID for ownership verification"),
     memory: Memory = Depends(get_memory_system)
 ) -> DeleteResponse:
     """Delete a single memory record.
     
     Requires user_id for ownership verification and narrative group cleanup.
+    Only memories belonging to the specified user_id can be deleted.
     """
-    user_id = request.user_id if request else None
+    # Verify ownership: check if memory belongs to this user
+    existing = await asyncio.to_thread(
+        memory.store.query,
+        filter_expr=f'id == {memory_id} and user_id == "{user_id}"',
+        output_fields=["id"],
+        limit=1
+    )
     
+    if not existing:
+        raise MemoryNotFoundError(memory_id)
+    
+    # Now safe to delete with verified user_id
     success = await asyncio.to_thread(
         memory.delete,
         memory_id=memory_id,
