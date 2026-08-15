@@ -10,7 +10,8 @@
 | 跑分时间 | 2026-08-14 22:13 起，完整跑分结束于次日 00:3x |
 | 数据 | data/locomo10.json（10 样本，1986 QA，排除 cat-5 后 1540 题） |
 | 命令 | 见第 5 节 |
-| 总体准确率 | **54.48%**（839/1540 CORRECT） |
+| **记忆工作流** | **W1 episodic-only 基线**（定义见 6.1） |
+| 总体准确率 | **54.48%**（839/1540 CORRECT，W1 工作流） |
 | 分项 | 1-multi-hop 56.74% / 2-temporal 47.35% / 3-open-domain 48.96% / 4-single-hop 57.07% |
 | 平均单题时延 | 2.05s（search + answer + judge） |
 | 结果文件 | result/locomo_neuramem_all_results.csv、result/summary.txt |
@@ -73,10 +74,12 @@ tqdm          4.67.1
 | GLM_MODEL | glm-4.6v | GLM 模型 |
 | LANGFUSE_TRACING_ENABLED | false | 本次跑分关闭 tracing |
 | LANGFUSE_SECRET_KEY / PUBLIC_KEY / BASE_URL | <from .env> | 仅 tracing 开启时使用 |
-| K_SEMANTIC | 5 | 语义检索 top-k（本次 ingest 不产生 semantic，实际为 0） |
-| K_EPISODIC | 5 | 情景检索 top-k（本次实际检索上下文 = episodic top-5） |
+| K_SEMANTIC | 5 | 语义检索 top-k（W1 基线 ingest 不产生 semantic，实际为 0；W2 完整工作流 consolidate 后全量注入） |
+| K_EPISODIC | 5 | 情景检索 top-k（W1 实际上下文 = episodic top-5；W2 还会被叙事组扩展） |
 | USE_ALL_SEMANTIC | true | 若存在 semantic 则全量注入 prompt |
-| NARRATIVE_SIMILARITY_THRESHOLD | 0.8（默认） | 叙事分组（本次 ingest 无分组，扩展=0） |
+| NARRATIVE_SIMILARITY_THRESHOLD | 0.8（默认） | 叙事分组相似度阈值（W1 未触发分组，扩展=0；W2 由 usage judge 驱动） |
+
+**记忆工作流（Memory Workflow）—— 跑分核心变量之一，定义与分数映射见 6.1。**
 
 ## 5. 跑分命令（复现用）
 
@@ -86,6 +89,12 @@ cd E:\code\NeuraMem
 ```
 
 流程：STEP1 ingest（10 样本并行 4 路，每样本独立子进程）→ STEP2 eval（1540 题，10 线程，answer+judge 内联）→ STEP3 stat（stat_results.py，排除 cat-5）。
+
+### 5.1 命令与工作流对应关系
+
+- W1（episodic-only 基线）：`run_benchmark.py` 命令 + 未接 consolidate/usage judge 的旧版评测脚本（commit 1cd4092 之前的 benchmark 代码）；
+- W2（完整系统闭环）：`run_benchmark.py` 命令 + commit e754dad 及之后的 benchmark 代码；
+- 升级后重跑请明确你要对比的是哪个工作流，输出文件不要相互覆盖。
 
 ## 6. 评测口径（与 OpenViking 的差异，升级对比时保持一致）
 
@@ -102,22 +111,30 @@ cd E:\code\NeuraMem
 
 > 结论：54.48% 是 NeuraMem 记忆系统本体（自身检索 + deepseek lenient judge）的成绩；**不可直接与 OpenViking 官方 README 的 80–83%（Agent+OpenViking 记忆，doubao judge）横向比较**。
 
-### 6.1 评测流程更新（2026-08-15，完整系统闭环）
+### 6.1 记忆工作流变量（Memory Workflow as a Benchmark Variable）
 
-54.48% 基线跑分只用了系统子集（episodic 写入 + 向量检索）。为对齐 demo/app.py 的真实工作流，评测流程已扩展为完整闭环：
+记忆系统在评测中的工作形态是**核心变量之一**：评测脚本决定系统哪些能力被激活，因此不同工作流跑出的分数**不可直接对比**。目前定义两种工作流：
+
+| 工作流 | 摄取阶段（Phase 1） | 评测阶段（Phase 2，每题） | 状态 | 分数 |
+|---|---|---|---|---|
+| **W1 episodic-only 基线** | manage（episodic CRUD），无 consolidate | search（episodic top-5 向量）→ LLM 回答 → LLM 判分 | 已跑（2026-08-14） | **54.48%** |
+| **W2 完整系统闭环** | manage（episodic CRUD）+ 样本摄取完 consolidate（提炼语义记忆） | search（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答 → usage judge（判断哪些检索记忆被用到）→ assign_to_narrative_group（用到的记忆聚成叙事组）→ LLM 判分 | 代码已就绪（e754dad），**分数待重跑** | 待定 |
 
 ```text
-Phase 1 Ingest: 逐消息对 manage（episodic CRUD）→ 样本摄取完 consolidate（提炼语义记忆）
-Phase 2 Eval  : search（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答
-                → usage judge（判断哪些检索记忆被回答用到）
-                → assign_to_narrative_group（用到的记忆按相似度聚成叙事组）→ LLM 判分
+W1 流程: manage -> search(top-5) -> answer -> judge
+W2 流程: manage -> consolidate -> search(top-5 + 组扩展 + semantic) -> answer -> usage judge -> 叙事分组 -> judge
 ```
 
 与 demo/app.py 的对应关系：consolidate = run_consolidation 按钮；usage judge + 叙事分组 = _process_memory 的 reconsolidation 闭环；search 叙事组扩展 = 混合检索的叙事链扩展。
 
-验证记录（冒烟）：sample_0 摄取 6 episodic → consolidate 生成 3 semantic；5 题评测中 expanded=1→2→4（叙事组扩展随分组增长而生效），每题目时约 7s（含一次 usage judge LLM 调用）。
+**对比规则**：
+- 系统代码升级对比（如升级前 vs 升级后）：必须使用**同一工作流**，否则分数差异无法归因；
+- W2 vs W1 的分数差距 = 完整系统相对子集的增益，可作为单独结论报告，但不得与系统升级混为一谈；
+- 报告任何分数时都必须声明工作流（如 54.48%@W1）。
 
-注意：完整系统流程的分数**尚未跑出**（54.48% 仍是 episodic-only 基线）；重跑后应在本节补充新分数，并与基线对比。
+验证记录（冒烟，2026-08-15）：sample_0 摄取 6 episodic → consolidate 生成 3 semantic；5 题评测中 expanded=1→2→4（叙事组扩展随分组增长而生效），每题目时约 7s（含一次 usage judge LLM 调用）。
+
+注意：W2 的分数**尚未跑出**（54.48% 是 W1 基线）；重跑 W2 后应在本节补充新分数，输出文件建议使用独立文件名（如 locomo_neuramem_full_results.csv），保留 W1 基线 CSV 以便逐题对比。
 
 ## 7. 升级后重跑注意事项
 
@@ -126,4 +143,5 @@ Phase 2 Eval  : search（episodic top-5 + 叙事组扩展 + semantic 全量）�
 3. 确认 Milvus 117.72.161.187:19530 可用（v2.5.9），集合名 memories；
 4. 重跑命令与第 5 节一致；ingest 会自动 reset 各样本（sample_0~sample_9）后重写，不产生跨次污染；
 5. 对比口径：新旧两次跑分之间只允许系统代码差异，评测脚本 / .env / 数据 / 服务器不应变化；
-6. 若升级包含检索策略变化（如 k、rerank、时间排序），在第 6 节表格中追加记录，避免对比时混淆。
+6. **声明工作流**：每次跑分必须记录使用的工作流（W1 / W2），同一工作流下才能做系统升级对比（见 6.1）；
+7. 若升级包含检索策略变化（如 k、rerank、时间排序），在第 6 节表格中追加记录，避免对比时混淆。
