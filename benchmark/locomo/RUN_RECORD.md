@@ -102,6 +102,23 @@ cd E:\code\NeuraMem
 
 > 结论：54.48% 是 NeuraMem 记忆系统本体（自身检索 + deepseek lenient judge）的成绩；**不可直接与 OpenViking 官方 README 的 80–83%（Agent+OpenViking 记忆，doubao judge）横向比较**。
 
+### 6.1 评测流程更新（2026-08-15，完整系统闭环）
+
+54.48% 基线跑分只用了系统子集（episodic 写入 + 向量检索）。为对齐 demo/app.py 的真实工作流，评测流程已扩展为完整闭环：
+
+```text
+Phase 1 Ingest: 逐消息对 manage（episodic CRUD）→ 样本摄取完 consolidate（提炼语义记忆）
+Phase 2 Eval  : search（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答
+                → usage judge（判断哪些检索记忆被回答用到）
+                → assign_to_narrative_group（用到的记忆按相似度聚成叙事组）→ LLM 判分
+```
+
+与 demo/app.py 的对应关系：consolidate = run_consolidation 按钮；usage judge + 叙事分组 = _process_memory 的 reconsolidation 闭环；search 叙事组扩展 = 混合检索的叙事链扩展。
+
+验证记录（冒烟）：sample_0 摄取 6 episodic → consolidate 生成 3 semantic；5 题评测中 expanded=1→2→4（叙事组扩展随分组增长而生效），每题目时约 7s（含一次 usage judge LLM 调用）。
+
+注意：完整系统流程的分数**尚未跑出**（54.48% 仍是 episodic-only 基线）；重跑后应在本节补充新分数，并与基线对比。
+
 ## 7. 升级后重跑注意事项
 
 1. 升级前先 git add -A && git commit（尤其 benchmark/ 目前 untracked），必要时打 tag 记录本次跑分代码基线；
