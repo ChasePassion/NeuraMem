@@ -59,6 +59,25 @@ def _format_msg(msg: Any) -> str:
     return str(msg)
 
 
+# Consolidate every N sessions while ingesting, mirroring a long-running
+# system that runs consolidation on a schedule as the conversation grows.
+# No consolidation after the last session: extracted semantic memories would
+# have no subsequent consumer.
+CONSOLIDATE_EVERY_SESSIONS = 7
+
+
+def _run_consolidation(memory: Memory, user_id: str, sample_name: str) -> None:
+    """Best-effort consolidation; failures must not abort the ingest."""
+    try:
+        stats = memory.consolidate(user_id)
+        logger.info(
+            f"Consolidated {sample_name}: processed={stats.memories_processed}, "
+            f"semantic_created={stats.semantic_created}"
+        )
+    except Exception as e:  # noqa: BLE001 - consolidation is best-effort
+        logger.warning(f"Consolidation failed for {sample_name}: {e}")
+
+
 def import_sample(
     memory: Memory,
     sample: Dict[str, Any],
@@ -90,6 +109,7 @@ def import_sample(
         selected_keys = selected_keys[:max_sessions]
 
     total_added = 0
+    processed_sessions = 0
     pbar = tqdm(selected_keys, desc=f"Ingesting {sample_name}")
     for s_key in pbar:
         messages = conv[s_key]
@@ -122,20 +142,14 @@ def import_sample(
             total_added += len(added_ids)
             pbar.set_postfix({"added_memories": total_added})
 
+        # Periodic consolidation while the conversation keeps growing.
+        # No consolidation after the last session: nothing follows it, so the
+        # extracted semantic memories would have no consumer.
+        processed_sessions += 1
+        if processed_sessions % CONSOLIDATE_EVERY_SESSIONS == 0:
+            _run_consolidation(memory, user_id, sample_name)
+
     logger.info(f"Successfully ingested {sample_name}: {total_added} episodic memories stored.")
-
-    # Consolidate episodic memories into semantic memories.
-    # Mirrors the demo's "consolidate" action: batch pattern merging extracts
-    # stable long-term facts, which eval then feeds into the answer context.
-    try:
-        stats = memory.consolidate(user_id)
-        logger.info(
-            f"Consolidated {sample_name}: processed={stats.memories_processed}, "
-            f"semantic_created={stats.semantic_created}"
-        )
-    except Exception as e:  # noqa: BLE001 - consolidation is best-effort
-        logger.warning(f"Consolidation failed for {sample_name}: {e}")
-
     return total_added
 
 

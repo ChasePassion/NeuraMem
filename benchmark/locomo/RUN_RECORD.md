@@ -118,7 +118,7 @@ cd E:\code\NeuraMem
 | 工作流 | 摄取阶段（Phase 1） | 评测阶段（Phase 2，每题） | 状态 | 分数 |
 |---|---|---|---|---|
 | **W1 episodic-only 基线** | manage（episodic CRUD），无 consolidate | search（episodic top-5 向量）→ LLM 回答 → LLM 判分 | 已跑（2026-08-14） | **54.48%** |
-| **W2 完整系统闭环** | manage（episodic CRUD）+ 样本摄取完 consolidate（提炼语义记忆） | search（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答 → usage judge（判断哪些检索记忆被用到）→ assign_to_narrative_group（用到的记忆聚成叙事组）→ LLM 判分 | 代码已就绪（e754dad），**分数待重跑** | 待定 |
+| **W2 完整系统闭环** | manage（episodic CRUD）+ **每 7 个 session consolidate 一次**（模拟周期巩固；末尾不补——无后续消费方） | search（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答 → usage judge（判断哪些检索记忆被用到）→ assign_to_narrative_group（用到的记忆聚成叙事组）→ LLM 判分 | 代码已就绪，**分数待重跑** | 待定 |
 
 ```text
 W1 流程: manage -> search(top-5) -> answer -> judge
@@ -132,7 +132,9 @@ W2 流程: manage -> consolidate -> search(top-5 + 组扩展 + semantic) -> answ
 - W2 vs W1 的分数差距 = 完整系统相对子集的增益，可作为单独结论报告，但不得与系统升级混为一谈；
 - 报告任何分数时都必须声明工作流（如 54.48%@W1）。
 
-验证记录（冒烟，2026-08-15）：sample_0 摄取 6 episodic → consolidate 生成 3 semantic；5 题评测中 expanded=1→2→4（叙事组扩展随分组增长而生效），每题目时约 7s（含一次 usage judge LLM 调用）。
+验证记录（冒烟，2026-08-15）：
+- 摄取：sample_1 摄取 8 sessions，第 7 个 session 后 consolidate 一次（48 episodic → +4 semantic），末尾无 consolidate；
+- 评测：5 题评测中 expanded=1→2→4（叙事组扩展随分组增长而生效），每题目时约 7s（含一次 usage judge LLM 调用）。
 
 注意：W2 的分数**尚未跑出**（54.48% 是 W1 基线）；重跑 W2 后应在本节补充新分数，输出文件建议使用独立文件名（如 locomo_neuramem_full_results.csv），保留 W1 基线 CSV 以便逐题对比。
 
