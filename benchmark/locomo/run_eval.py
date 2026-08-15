@@ -131,6 +131,26 @@ def answer_question(
     else:
         final_answer = raw_response.strip()
 
+    # 4. Judge which retrieved memories were actually used in the answer, then
+    #    assign them to narrative groups. Mirrors the demo's full loop:
+    #    search -> respond -> judge usage -> reconsolidate (narrative grouping).
+    #    Later searches then expand these groups, exercising narrative memory.
+    try:
+        used_texts = memory._memory_usage_judge.judge_used_memories(
+            episodic_memories=[mem.text for mem in episodic],
+            last_user=question,
+            last_assistant=final_answer,
+        )
+        used_ids = [mem.id for mem in episodic if mem.text in used_texts]
+        if used_ids:
+            assignments = memory.assign_to_narrative_group(used_ids, user_id)
+            logger.info(
+                f"Assigned {len(assignments)} episodic memories to narrative groups "
+                f"for {qa_item['question_id']}"
+            )
+    except Exception as e:  # noqa: BLE001 - never fail the eval over this
+        logger.warning(f"Usage judge / narrative assignment failed for {qa_item['question_id']}: {e}")
+
     elapsed = round(time.time() - start_time, 2)
 
     return {

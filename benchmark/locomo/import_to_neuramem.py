@@ -123,6 +123,19 @@ def import_sample(
             pbar.set_postfix({"added_memories": total_added})
 
     logger.info(f"Successfully ingested {sample_name}: {total_added} episodic memories stored.")
+
+    # Consolidate episodic memories into semantic memories.
+    # Mirrors the demo's "consolidate" action: batch pattern merging extracts
+    # stable long-term facts, which eval then feeds into the answer context.
+    try:
+        stats = memory.consolidate(user_id)
+        logger.info(
+            f"Consolidated {sample_name}: processed={stats.memories_processed}, "
+            f"semantic_created={stats.semantic_created}"
+        )
+    except Exception as e:  # noqa: BLE001 - consolidation is best-effort
+        logger.warning(f"Consolidation failed for {sample_name}: {e}")
+
     return total_added
 
 
