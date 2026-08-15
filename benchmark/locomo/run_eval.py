@@ -86,6 +86,11 @@ def load_locomo_qa_list(path: str, sample_idx: Optional[int] = None) -> List[Dic
         sample_id = sample.get("sample_id", f"sample_{s_idx}")
         user_id = f"sample_{s_idx}"
         for q_idx, qa in enumerate(sample.get("qa", [])):
+            # Skip adversarial category 5, same as OpenViking's run_eval:
+            # these questions test hallucination (asked about events that
+            # never happened) and are excluded from the score.
+            if str(qa.get("category", "")) == "5":
+                continue
             qa_list.append({
                 "sample_index": s_idx,
                 "sample_id": sample_id,
