@@ -64,10 +64,13 @@ tqdm          4.67.1
 | SILICONFLOW_API_KEY | <from .env> | Embedding API key |
 | SILICONFLOW_BASE_URL | https://api.siliconflow.cn/v1 | Embedding endpoint |
 | SILICONFLOW_EMBEDDING_MODEL | Qwen/Qwen3-Embedding-4B（dim 2560） | 检索向量模型 |
-| DEEPSEEK_API_KEY | <from .env> | 主 LLM API key |
-| DEEPSEEK_BASE_URL | https://api.deepseek.com | 主 LLM endpoint |
-| DEEPSEEK_MODEL | deepseek-chat | 主 LLM（回答 + 判分共用） |
-| OPENROUTER_API_KEY | <from .env> | 备用 LLM key |
+| DEEPSEEK_API_KEY | <from .env> | 主 LLM API key（W1 基线使用；W3 起未用） |
+| DEEPSEEK_BASE_URL | https://api.deepseek.com | 主 LLM endpoint（W1 基线） |
+| DEEPSEEK_MODEL | deepseek-chat | 主 LLM（W1 基线：回答 + 判分共用） |
+| MINIMAX_API_KEY | <from .env> | **MiniMax key（W3 起全链路唯一 LLM）** |
+| MINIMAX_BASE_URL | https://api.minimaxi.com/v1 | MiniMax OpenAI 兼容 endpoint（官方文档） |
+| MINIMAX_MODEL | MiniMax-M3 | 评测全链路模型（manage/consolidate/usage judge/answer/judge），**thinking 开启**（M3 推理模型默认行为） |
+| OPENROUTER_API_KEY | <from .env> | 备用 LLM key（W3 起评测禁用 fallback，单 provider 模式） |
 | OPENROUTER_BASE_URL | https://openrouter.ai/api/v1 | 备用 LLM endpoint |
 | GLM_API_KEY | <from .env> | GLM 备用 key |
 | GLM_BASE_URL | https://open.bigmodel.cn/api/coding/paas/v4 | GLM endpoint |
@@ -105,7 +108,7 @@ cd E:\code\NeuraMem
 | 检索 | episodic 向量 top-5（k_episodic=5），无 rerank，无时间排序 | 50 召回 + rerank top10 + 30k 字符预算，按 created_at 时间升序 |
 | reference_date | 硬编码 2023 | 每个样本最后一个 session 的实际日期 |
 | 判分 prompt | OpenViking lenient 模板（partial credit/paraphrase/日期±14天），无 evidence | 同一 lenient 模板，默认带 evidence 原文，另有 --strict-prompt |
-| 判分模型 | deepseek-chat（与回答同一 client） | doubao-seed-2-0-pro（火山方舟） |
+| 判分模型 | W1/W2: deepseek-chat；W3: MiniMax-M3（见 6.1） | doubao-seed-2-0-pro（火山方舟） |
 | cat-5 adversarial | 排除 | 排除 |
 | preprocess | cat-3 取分号前第一项 | 相同 |
 
@@ -113,16 +116,18 @@ cd E:\code\NeuraMem
 
 ### 6.1 记忆工作流变量（Memory Workflow as a Benchmark Variable）
 
-记忆系统在评测中的工作形态是**核心变量之一**：评测脚本决定系统哪些能力被激活，因此不同工作流跑出的分数**不可直接对比**。目前定义两种工作流：
+记忆系统在评测中的工作形态是**核心变量之一**：评测脚本决定系统哪些能力被激活，因此不同工作流跑出的分数**不可直接对比**。**LLM 模型也是变量**（不同模型的推理能力直接影响分数）。目前定义三种工作流：
 
 | 工作流 | 摄取阶段（Phase 1） | 评测阶段（Phase 2，每题） | 状态 | 分数 |
 |---|---|---|---|---|
 | **W1 episodic-only 基线** | manage（episodic CRUD），无 consolidate | search（episodic top-5 向量）→ LLM 回答 → LLM 判分 | 已跑（2026-08-14） | **54.48%** |
 | **W2 完整系统闭环** | manage（episodic CRUD）+ **每 7 个 session consolidate 一次**（模拟周期巩固；末尾不补——无后续消费方） | search（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答 → usage judge（判断哪些检索记忆被用到）→ assign_to_narrative_group（用到的记忆聚成叙事组）→ LLM 判分 | 代码已就绪，**分数待重跑** | 待定 |
+| **W3 完整闭环 + MiniMax-M3** | 同 W2 | 同 W2；**全链路 LLM = MiniMax-M3**（api.minimaxi.com/v1，OpenAI 兼容，thinking 开启；manage/consolidate/usage judge/answer/judge 全部走 M3，评测禁用 fallback 单 provider 模式） | 代码已就绪（llm_config.py apply_minimax_primary），**分数待重跑** | 待定 |
 
 ```text
-W1 流程: manage -> search(top-5) -> answer -> judge
-W2 流程: manage -> consolidate -> search(top-5 + 组扩展 + semantic) -> answer -> usage judge -> 叙事分组 -> judge
+W1 流程: manage -> search(top-5) -> answer -> judge                                    (deepseek-chat)
+W2 流程: manage -> consolidate -> search(top-5 + 组扩展 + semantic) -> answer -> usage judge -> 叙事分组 -> judge   (deepseek-chat)
+W3 流程: 同 W2，全链路 LLM 换成 MiniMax-M3（thinking 开启）
 ```
 
 与 demo/app.py 的对应关系：consolidate = run_consolidation 按钮；usage judge + 叙事分组 = _process_memory 的 reconsolidation 闭环；search 叙事组扩展 = 混合检索的叙事链扩展。

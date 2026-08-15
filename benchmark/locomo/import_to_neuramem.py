@@ -23,6 +23,11 @@ dotenv.load_dotenv(PROJECT_ROOT / ".env")
 
 from src.memory_system import Memory, MemoryConfig
 
+try:
+    from benchmark.locomo.llm_config import apply_minimax_primary
+except ImportError:
+    from llm_config import apply_minimax_primary
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -167,6 +172,8 @@ def main():
         config.milvus_uri = args.milvus_uri
     elif not config.milvus_uri:
         config.milvus_uri = os.getenv("MILVUS_URL", "http://117.72.161.187:19530")
+
+    apply_minimax_primary(config)
 
     logger.info(f"Initializing NeuraMem with Milvus URI: {config.milvus_uri}")
     memory = Memory(config)

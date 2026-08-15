@@ -108,7 +108,8 @@ class Memory:
             model=self._config.llm_primary_model,
             fallback_api_key=self._config.llm_fallback_api_key,
             fallback_base_url=self._config.llm_fallback_base_url,
-            fallback_model=None
+            fallback_model=None,
+            extra_body=self._config.llm_extra_body,
         )
     
     def _create_milvus_store(self) -> MilvusStore:
