@@ -230,7 +230,7 @@ $RECYCLE.BIN/
 *.accdb
 
 # Data files
-data/
+data/*
 datasets/
 *.csv
 *.json
@@ -332,3 +332,5 @@ model_cache/
 *.safetensors
 *.pt
 *.pth
+# Benchmark dataset (explicitly tracked)
+!data/locomo10.json
