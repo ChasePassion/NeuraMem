@@ -6,6 +6,7 @@ with exponential backoff.
 
 import asyncio
 import logging
+import random
 import time
 from typing import Callable, TypeVar, Optional, Any, Generator, AsyncGenerator, Tuple, Type
 
@@ -34,6 +35,7 @@ class RetryExecutor:
         self,
         max_retries: int = 3,
         base_delay: float = 1.0,
+        max_delay: float = 30.0,
         model: str = "",
         operation: str = "",
         retryable_exceptions: Tuple[Type[Exception], ...] = (Exception,),
@@ -43,6 +45,9 @@ class RetryExecutor:
         Args:
             max_retries: Maximum number of retry attempts
             base_delay: Base delay in seconds for exponential backoff
+            max_delay: Upper bound for a single backoff delay in seconds.
+                Without a cap, the exponential schedule explodes for large
+                retry budgets (2^9 = 512s at attempt 10).
             model: Model identifier for error reporting
             operation: Operation name for logging
             retryable_exceptions: Tuple of exception types that should trigger retry.
@@ -50,14 +55,19 @@ class RetryExecutor:
         """
         self.max_retries = max_retries
         self.base_delay = base_delay
+        self.max_delay = max_delay
         self.model = model
         self.operation = operation
         self.retryable_exceptions = retryable_exceptions
         self._last_error: Optional[Exception] = None
     
     def _calculate_delay(self, attempt: int) -> float:
-        """Calculate exponential backoff delay."""
-        return self.base_delay * (2 ** attempt)
+        """Calculate exponential backoff delay, capped at max_delay."""
+        return min(self.base_delay * (2 ** attempt), self.max_delay)
+    
+    def _jittered(self, delay: float) -> float:
+        """Apply +/-20% jitter so concurrent workers do not retry in lockstep."""
+        return delay * random.uniform(0.8, 1.2)
     
     def _log_retry(self, attempt: int, error: Exception, is_async: bool = False) -> None:
         """Log retry attempt."""
@@ -101,7 +111,7 @@ class RetryExecutor:
                 self._last_error = e
                 self._log_retry(attempt, e)
                 if attempt < self.max_retries - 1:
-                    delay = self._calculate_delay(attempt)
+                    delay = self._jittered(self._calculate_delay(attempt))
                     time.sleep(delay)
         
         self._raise_final_error()
@@ -127,7 +137,7 @@ class RetryExecutor:
                 self._last_error = e
                 self._log_retry(attempt, e, is_async=True)
                 if attempt < self.max_retries - 1:
-                    delay = self._calculate_delay(attempt)
+                    delay = self._jittered(self._calculate_delay(attempt))
                     await asyncio.sleep(delay)
         
         self._raise_final_error()
@@ -157,7 +167,7 @@ class RetryExecutor:
                 self._last_error = e
                 self._log_retry(attempt, e)
                 if attempt < self.max_retries - 1:
-                    delay = self._calculate_delay(attempt)
+                    delay = self._jittered(self._calculate_delay(attempt))
                     time.sleep(delay)
         
         self._raise_final_error()
@@ -191,7 +201,7 @@ class RetryExecutor:
                 self._last_error = e
                 self._log_retry(attempt, e, is_async=True)
                 if attempt < self.max_retries - 1:
-                    delay = self._calculate_delay(attempt)
+                    delay = self._jittered(self._calculate_delay(attempt))
                     await asyncio.sleep(delay)
         
         self._raise_final_error()

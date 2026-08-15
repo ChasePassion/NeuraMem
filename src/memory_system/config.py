@@ -41,6 +41,10 @@ class MemoryConfig:
     use_all_semantic: bool = field(default_factory=lambda: os.getenv("USE_ALL_SEMANTIC", "true").lower() == "true")
     
     # Langfuse 监控配置
+    langfuse_tracing_enabled: bool = field(
+        default_factory=lambda: os.getenv("LANGFUSE_TRACING_ENABLED", "true").lower()
+        not in ("0", "false", "no")
+    )
     langfuse_secret_key: str = field(default_factory=lambda: os.getenv("LANGFUSE_SECRET_KEY"))
     langfuse_public_key: str = field(default_factory=lambda: os.getenv("LANGFUSE_PUBLIC_KEY"))
     langfuse_base_url: str = field(

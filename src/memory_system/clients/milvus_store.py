@@ -1,6 +1,7 @@
 """Milvus vector store client for memory storage."""
 
 import logging
+import time
 from typing import List, Dict, Any, Optional
 
 from pymilvus import (
@@ -63,24 +64,62 @@ class MilvusStore:
     def __init__(
         self,
         uri: str,
-        collection_name: str
+        collection_name: str,
+        connect_timeout: float = 30.0,
+        connect_retries: int = 5,
+        retry_backoff: float = 3.0,
     ):
         """Initialize Milvus connection.
         
         Args:
             uri: Milvus server URI
             collection_name: Name of the collection to use
+            connect_timeout: Per-attempt gRPC connect timeout in seconds.
+                The pymilvus default (10s) is too tight for remote servers
+                behind slow/unstable links.
+            connect_retries: Number of connection attempts before giving up.
+                Transient channel failures (network jitter, brief server
+                load) must not kill the whole process.
+            retry_backoff: Fixed sleep between attempts in seconds.
             
         Raises:
-            MilvusConnectionError: If connection fails
+            MilvusConnectionError: If all connection attempts fail
         """
         self._uri = uri
         self._collection_name = collection_name
         
-        try:
-            self._client = MilvusClient(uri=uri)
-        except Exception as e:
-            raise MilvusConnectionError(uri, e)
+        self._client = self._connect_with_retry(
+            timeout=connect_timeout,
+            retries=connect_retries,
+            backoff=retry_backoff,
+        )
+
+    def _connect_with_retry(
+        self,
+        timeout: float,
+        retries: int,
+        backoff: float,
+    ) -> MilvusClient:
+        """Create a MilvusClient, retrying transient connection failures.
+
+        pymilvus only performs a bounded channel-ready wait inside the
+        constructor and raises immediately on timeout, so a single dropped
+        gRPC handshake aborts the whole run. Retrying with backoff absorbs
+        short-lived outages without masking a genuinely dead server.
+        """
+        last_error: Optional[Exception] = None
+        for attempt in range(1, retries + 1):
+            try:
+                return MilvusClient(uri=self._uri, timeout=timeout)
+            except Exception as e:  # noqa: BLE001 - surface as MilvusConnectionError below
+                last_error = e
+                logger.warning(
+                    f"Milvus connection attempt {attempt}/{retries} failed "
+                    f"for {self._uri}: {e}"
+                )
+                if attempt < retries:
+                    time.sleep(backoff)
+        raise MilvusConnectionError(self._uri, last_error)
     
     def create_collection(self, dim: int = 2560) -> None:
         """Create the memories collection with full schema.
@@ -91,6 +130,10 @@ class MilvusStore:
         # Check if collection exists
         if self._client.has_collection(self._collection_name):
             logger.info(f"Collection '{self._collection_name}' already exists")
+            try:
+                self._client.load_collection(self._collection_name)
+            except Exception:
+                pass
             return
         
         # Build schema
@@ -243,6 +286,10 @@ class MilvusStore:
         
         if self._client.has_collection(groups_collection_name):
             logger.info(f"Groups collection '{groups_collection_name}' already exists")
+            try:
+                self._client.load_collection(groups_collection_name)
+            except Exception:
+                pass
             return groups_collection_name
         
         # Build schema

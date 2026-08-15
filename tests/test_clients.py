@@ -1,4 +1,4 @@
-﻿"""Unit tests for infrastructure layer clients.
+"""Unit tests for infrastructure layer clients.
 
 Tests for EmbeddingClient, LLMClient, and MilvusStore.
 """
@@ -201,6 +201,7 @@ class TestLLMClient:
                     fallback_api_key="deepseek_key",
                     fallback_base_url="https://api.deepseek.com",
                     fallback_model="deepseek-chat",
+                    max_retries=3,
                 )
                 
                 result = client.chat("system prompt", "user message")
