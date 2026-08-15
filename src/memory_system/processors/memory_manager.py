@@ -78,7 +78,7 @@ class EpisodicMemoryManager:
             }
         )
         
-        # 构造完整对话轮�?
+        # 构造完整对话轮次
         current_turn = {
             "user": user_text,
             "assistant": assistant_text
@@ -100,7 +100,7 @@ class EpisodicMemoryManager:
         # 提取解析后的数据
         response = llm_response["parsed_data"]
         
-        # 转换为操作列�?
+        # 转换为操作列表
         operations = []
         
         # 处理添加操作
@@ -116,9 +116,12 @@ class EpisodicMemoryManager:
                 text=update_op["new_text"]
             ))
         
-        # 处理删除操作
+        # Handle delete operations
         for delete_op in response.get("delete", []):
-            operations.append(MemoryOperation("delete", memory_id=delete_op["id"]))
+            # MiniMax-M3 may emit bare ids ("delete": [1, 2]) instead of
+            # objects ({"id": 1}); accept both shapes.
+            memory_id = delete_op["id"] if isinstance(delete_op, dict) else delete_op
+            operations.append(MemoryOperation("delete", memory_id=memory_id))
         
         result = MemoryManagementResult(operations)
         
