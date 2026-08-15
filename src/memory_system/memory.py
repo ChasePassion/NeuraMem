@@ -121,6 +121,10 @@ class Memory:
     def _create_langfuse_client(self):
         """Create Langfuse client if configuration is available."""
 
+        if not self._config.langfuse_tracing_enabled:
+            logger.info("Langfuse tracing disabled; skipping Langfuse client initialization")
+            return None
+
         secret_key = self._config.langfuse_secret_key
         public_key = self._config.langfuse_public_key
         host = self._config.langfuse_base_url

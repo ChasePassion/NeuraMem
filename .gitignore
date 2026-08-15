@@ -323,6 +323,9 @@ conversation_history/
 milvus_logs/
 milvus_data/
 
+# Benchmark run outputs (CSV results, summary reports)
+result/
+
 # AI model cache
 model_cache/
 *.bin

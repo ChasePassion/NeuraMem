@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from typing import Dict, Any, Optional
 
 from openai import OpenAI, AsyncOpenAI
@@ -24,6 +25,8 @@ class LLMClient:
         fallback_api_key: Optional[str] = None,
         fallback_base_url: Optional[str] = None,
         fallback_model: Optional[str] = None,
+        max_retries: Optional[int] = None,
+        base_delay: Optional[float] = None,
     ):
         """Initialize LLM client.
         
@@ -34,6 +37,11 @@ class LLMClient:
             fallback_api_key: Optional API key for fallback provider
             fallback_base_url: Optional fallback base URL
             fallback_model: Optional fallback model ID
+            max_retries: Retry budget for transient API/network failures.
+                Defaults to LLM_MAX_RETRIES env var, then 10. Network blips
+                (proxy hiccups, TLS resets) routinely outlast 3 attempts.
+            base_delay: Base exponential-backoff delay in seconds.
+                Defaults to LLM_BASE_DELAY env var, then 1.0.
         """
         self._client = OpenAI(api_key=api_key, base_url=base_url)
         self._async_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
@@ -51,8 +59,14 @@ class LLMClient:
             )
             self._fallback_model = fallback_model
         
-        self._max_retries = 3
-        self._base_delay = 1.0
+        self._max_retries = (
+            max_retries if max_retries is not None
+            else int(os.getenv("LLM_MAX_RETRIES", "10"))
+        )
+        self._base_delay = (
+            base_delay if base_delay is not None
+            else float(os.getenv("LLM_BASE_DELAY", "1.0"))
+        )
     
     @observe(as_type="generation")
     def chat(self, system_prompt: str, user_message: str) -> str:
