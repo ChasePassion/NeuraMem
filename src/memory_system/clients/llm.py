@@ -27,6 +27,7 @@ class LLMClient:
         fallback_model: Optional[str] = None,
         max_retries: Optional[int] = None,
         base_delay: Optional[float] = None,
+        extra_body: Optional[Dict[str, Any]] = None,
     ):
         """Initialize LLM client.
         
@@ -67,6 +68,16 @@ class LLMClient:
             base_delay if base_delay is not None
             else float(os.getenv("LLM_BASE_DELAY", "1.0"))
         )
+        self._extra_body = extra_body
+
+    def _extra_body_kwargs(self) -> Dict[str, Any]:
+        """Extra request body for providers needing vendor-specific params.
+
+        E.g. reasoning models: MiniMax-M3 accepts thinking: {type: "disabled"}
+        to skip the think block (faster, cleaner output). Passed via the
+        OpenAI SDK's extra_body escape hatch.
+        """
+        return {"extra_body": self._extra_body} if self._extra_body else {}
     
     @observe(as_type="generation")
     def chat(self, system_prompt: str, user_message: str) -> str:
@@ -248,7 +259,8 @@ class LLMClient:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
-                stream=True
+                stream=True,
+                **self._extra_body_kwargs(),
             )
             async for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:
@@ -320,20 +332,33 @@ class LLMClient:
             logger.error("Empty response from LLM")
             return default
         
-        # Try to extract JSON from response (handle markdown code blocks)
+        # Try to extract JSON from response (handle markdown code blocks and
+        # reasoning-think blocks emitted by reasoning models such as MiniMax-M3)
         text = response.strip()
-        
+
+        # Strip the reasoning-think block if present (content before the close tag)
+        think_open = chr(60) + "think" + chr(62)
+        think_close = chr(60) + "/think" + chr(62)
+        if think_open in text and think_close in text:
+            text = text.split(think_close, 1)[-1].strip()
+
         # Remove markdown code block if present
         if text.startswith("```json"):
             text = text[7:]
         elif text.startswith("```"):
             text = text[3:]
-        
+
         if text.endswith("```"):
             text = text[:-3]
-        
+
         text = text.strip()
-        
+
+        # Extract the JSON object wherever it appears in the remaining text
+        json_start = text.find("{")
+        json_end = text.rfind("}")
+        if json_start != -1 and json_end > json_start:
+            text = text[json_start:json_end + 1]
+
         try:
             return json.loads(text)
         except json.JSONDecodeError as e:
@@ -362,6 +387,7 @@ class LLMClient:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
+                **self._extra_body_kwargs(),
             )
             return response.choices[0].message.content
         
@@ -389,7 +415,8 @@ class LLMClient:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
-                stream=True
+                stream=True,
+                **self._extra_body_kwargs(),
             )
             for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:

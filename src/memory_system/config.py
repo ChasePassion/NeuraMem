@@ -1,11 +1,24 @@
 """Configuration module for AI Memory System."""
 
+import json
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Dict, Optional
 import os
 import dotenv
 
 dotenv.load_dotenv()
+
+
+def _load_extra_body() -> Optional[Dict[str, Any]]:
+    """Parse LLM_EXTRA_BODY (JSON) into a dict, None when unset/invalid."""
+    raw = os.getenv("LLM_EXTRA_BODY", "")
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
 
 @dataclass
 class MemoryConfig:
@@ -29,6 +42,9 @@ class MemoryConfig:
     # 备用 LLM 配置 (OpenRouter)
     llm_fallback_api_key: str = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY"))
     llm_fallback_base_url: str = field(default_factory=lambda: os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"))
+
+    # 额外请求体（vendor-specific），如推理模型关闭思考：{"thinking": {"type": "disabled"}}
+    llm_extra_body: Optional[Dict[str, Any]] = field(default_factory=_load_extra_body)
     
     # GLM（备用）
     glm_api_key: str = field(default_factory=lambda: os.getenv("GLM_API_KEY"))

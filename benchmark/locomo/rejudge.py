@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from src.memory_system.clients import LLMClient
 from src.memory_system.config import MemoryConfig
+from benchmark.locomo.llm_config import apply_minimax_primary
 from benchmark.locomo.locomo_prompts import get_judge_prompt, JUDGE_SYSTEM_PROMPT, preprocess_answer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -40,6 +41,16 @@ def judge_row(llm_client: LLMClient, row: dict) -> tuple[str, str]:
         if clean.startswith("```"):
             clean = "\n".join(clean.split("\n")[1:])
             clean = clean.split("```")[0].strip()
+        # Strip reasoning-think block emitted by reasoning models (e.g. MiniMax-M3)
+        think_open = chr(60) + "think" + chr(62)
+        think_close = chr(60) + "/think" + chr(62)
+        if think_open in clean and think_close in clean:
+            clean = clean.split(think_close, 1)[-1].strip()
+        # Extract the JSON object wherever it appears
+        json_start = clean.find("{")
+        json_end = clean.rfind("}")
+        if json_start != -1 and json_end > json_start:
+            clean = clean[json_start:json_end + 1]
         try:
             parsed = json.loads(clean)
             label = str(parsed.get("label", "")).strip().upper()
@@ -72,12 +83,11 @@ def main():
         rows = list(reader)
 
     config = MemoryConfig()
+    apply_minimax_primary(config)
     llm_client = LLMClient(
         api_key=config.llm_primary_api_key,
         base_url=config.llm_primary_base_url,
         model=config.llm_primary_model,
-        fallback_api_key=config.llm_fallback_api_key,
-        fallback_base_url=config.llm_fallback_base_url,
     )
 
     to_grade = [i for i, r in enumerate(rows) if args.force or not r.get("result") or r.get("result") == "WRONG"]

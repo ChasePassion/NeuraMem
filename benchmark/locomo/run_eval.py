@@ -28,6 +28,11 @@ from src.memory_system import Memory, MemoryConfig
 from src.memory_system.clients import LLMClient
 
 try:
+    from benchmark.locomo.llm_config import apply_minimax_primary
+except ImportError:
+    from llm_config import apply_minimax_primary
+
+try:
     from benchmark.locomo.locomo_prompts import (
         get_answer_generation_prompt,
         get_judge_prompt,
@@ -125,6 +130,12 @@ def answer_question(
         user_message=prompt,
     )
 
+    # Strip reasoning-think block emitted by reasoning models (e.g. MiniMax-M3)
+    think_open = chr(60) + "think" + chr(62)
+    think_close = chr(60) + "/think" + chr(62)
+    if think_open in raw_response and think_close in raw_response:
+        raw_response = raw_response.split(think_close, 1)[-1].strip()
+
     # Extract final answer after "ANSWER:" if present
     if "ANSWER:" in raw_response:
         final_answer = raw_response.split("ANSWER:")[-1].strip()
@@ -196,6 +207,16 @@ def judge_single_response(
         if clean.startswith("```"):
             clean = "\n".join(clean.split("\n")[1:])
             clean = clean.split("```")[0].strip()
+        # Strip reasoning-think block emitted by reasoning models (e.g. MiniMax-M3)
+        think_open = chr(60) + "think" + chr(62)
+        think_close = chr(60) + "/think" + chr(62)
+        if think_open in clean and think_close in clean:
+            clean = clean.split(think_close, 1)[-1].strip()
+        # Extract the JSON object wherever it appears
+        json_start = clean.find("{")
+        json_end = clean.rfind("}")
+        if json_start != -1 and json_end > json_start:
+            clean = clean[json_start:json_end + 1]
         try:
             parsed = _json.loads(clean)
             label = str(parsed.get("label", "")).strip().upper()
@@ -237,6 +258,8 @@ def main():
         config.milvus_uri = args.milvus_uri
     elif not config.milvus_uri:
         config.milvus_uri = os.getenv("MILVUS_URL", "http://117.72.161.187:19530")
+
+    apply_minimax_primary(config)
 
     memory = Memory(config)
     llm_client = memory._llm_client

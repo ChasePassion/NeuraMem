@@ -18,6 +18,11 @@ from src.memory_system.clients import LLMClient
 from src.memory_system.config import MemoryConfig
 
 try:
+    from benchmark.locomo.llm_config import apply_minimax_primary
+except ImportError:
+    from llm_config import apply_minimax_primary
+
+try:
     from benchmark.locomo.locomo_prompts import (
         get_judge_prompt,
         JUDGE_SYSTEM_PROMPT,
@@ -51,12 +56,11 @@ def main():
         rows = list(reader)
 
     config = MemoryConfig()
+    apply_minimax_primary(config)
     llm_client = LLMClient(
         api_key=config.llm_primary_api_key,
         base_url=config.llm_primary_base_url,
         model=config.llm_primary_model,
-        fallback_api_key=config.llm_fallback_api_key,
-        fallback_base_url=config.llm_fallback_base_url,
     )
 
     to_grade_indices = [
