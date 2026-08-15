@@ -19,6 +19,26 @@ NeuraMem 是一个基于神经科学和记忆模型的人工智能记忆系统�
 *   **叙事记忆 (Narrative Memory)**: 同一主题的事件叙事链（例如：用户腹泻 -> 找不到厕所 -> 拉裤子）。
 
 
+## 评测结果 (Benchmark Results)
+
+NeuraMem 在 [LoCoMo](https://github.com/snap-stanford/locomo) 长对话记忆基准上的评测结果（2026-08-15，排除 adversarial 类题目后的 1540 题）：
+
+| 类别 | 题目数 | 正确 | 准确率 |
+| :--- | ---: | ---: | ---: |
+| 1-multi-hop (多跳推理) | 282 | 160 | 56.74% |
+| 2-temporal (时间推理) | 321 | 152 | 47.35% |
+| 3-open-domain (开放域) | 96 | 47 | 48.96% |
+| 4-single-hop (单跳问答) | 841 | 480 | 57.07% |
+| **总体** | **1540** | **839** | **54.48%** |
+
+**评测口径**：同一份 LoCoMo 数据（10 个会话），完整走 ingest → 检索（episodic top-5）→ LLM 回答（deepseek-chat）→ LLM 判分（lenient 模板）流程；平均单题时延 2.05s。完整的环境配置、复现命令与 OpenViking 口径差异说明见 [benchmark/locomo/RUN_RECORD.md](benchmark/locomo/RUN_RECORD.md)。
+
+一键复现：
+
+```bash
+python benchmark/locomo/run_benchmark.py --all-samples --threads 10 --ingest-parallel 4 --output result/locomo_neuramem_all_results.csv
+```
+
 ## 功能实现 (Feature Implementation)
 
 项目通过以下核心类实现记忆系统的关键功能：
