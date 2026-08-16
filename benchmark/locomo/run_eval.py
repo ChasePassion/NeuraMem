@@ -64,6 +64,8 @@ QA_FIELDNAMES = [
     "result",
     "reasoning",
     "timestamp",
+    "cache_hit_tokens",
+    "cache_prompt_tokens",
 ]
 
 
@@ -287,11 +289,28 @@ def main():
     evaluated_rows = []
 
     def process_item(item):
+        # Per-thread usage deltas: each question is processed synchronously on
+        # one worker thread, so the delta between snapshots is exactly the
+        # tokens consumed by this question (answer + usage judge + judge).
+        usage_before = llm_client.usage_stats.thread_snapshot()
         row = answer_question(memory, llm_client, item)
         if args.judge:
             label, reasoning = judge_single_response(llm_client, row)
             row["result"] = label
             row["reasoning"] = reasoning
+        usage_after = llm_client.usage_stats.thread_snapshot()
+        row["cache_hit_tokens"] = (
+            usage_after["cache_read_tokens"] - usage_before["cache_read_tokens"]
+        )
+        row["cache_prompt_tokens"] = (
+            usage_after["input_tokens"]
+            + usage_after["cache_read_tokens"]
+            + usage_after["cache_write_tokens"]
+        ) - (
+            usage_before["input_tokens"]
+            + usage_before["cache_read_tokens"]
+            + usage_before["cache_write_tokens"]
+        )
 
         with write_lock:
             writer.writerow(row)
@@ -311,6 +330,27 @@ def main():
     csv_file.close()
     elapsed = time.time() - start_time
     logger.info(f"Evaluation complete! Processed {len(evaluated_rows)} questions in {elapsed:.1f}s")
+
+    # KV cache (prefix cache) hit-rate summary, from the same usage the
+    # client parsed on every LLM call (architecture_target.md 6.5).
+    usage_total = llm_client.usage_stats.snapshot()
+    prompt_tokens = (
+        usage_total["input_tokens"]
+        + usage_total["cache_read_tokens"]
+        + usage_total["cache_write_tokens"]
+    )
+    hit_rate = llm_client.usage_stats.hit_rate()
+    if hit_rate is None:
+        logger.info(
+            f"KV cache: provider reported no cache tokens across {usage_total['calls']} "
+            f"LLM calls (prompt_tokens={prompt_tokens})"
+        )
+    else:
+        logger.info(
+            f"KV cache: hit={usage_total['cache_read_tokens']} tokens / "
+            f"prompt={prompt_tokens} tokens over {usage_total['calls']} LLM calls "
+            f"-> hit rate {hit_rate:.2%}"
+        )
 
 
 if __name__ == "__main__":

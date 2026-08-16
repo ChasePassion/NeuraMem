@@ -48,6 +48,9 @@ def main():
     total_time = 0.0
     valid_rows = 0
     by_category = defaultdict(lambda: {"CORRECT": 0, "WRONG": 0, "OTHER": 0})
+    cache_hit_tokens = 0
+    cache_prompt_tokens = 0
+    cache_rows = 0
 
     with open(args.input, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -77,9 +80,25 @@ def main():
                 except ValueError:
                     pass
 
+            # KV/prefix cache usage reported per question (fields absent in
+            # CSVs produced before cache accounting was added -> treated as 0)
+            hit = row.get("cache_hit_tokens", "")
+            prompt = row.get("cache_prompt_tokens", "")
+            if hit:
+                try:
+                    cache_hit_tokens += float(hit)
+                    cache_prompt_tokens += float(prompt)
+                    cache_rows += 1
+                except ValueError:
+                    pass
+
     total_graded = correct + wrong
     accuracy = correct / total_graded if total_graded > 0 else 0.0
     avg_time = total_time / valid_rows if valid_rows > 0 else 0.0
+    cache_rate = (
+        cache_hit_tokens / cache_prompt_tokens
+        if cache_prompt_tokens > 0 else None
+    )
 
     output_lines = [
         "==========================================================================",
@@ -91,6 +110,13 @@ def main():
         f"Wrong                         : {wrong}",
         f"Overall Accuracy              : {accuracy:.2%}",
         f"Average Latency per Query     : {avg_time:.2f}s",
+        "--------------------------------------------------------------------------",
+        "KV Cache (Prefix Cache) Usage:",
+        f"Cache Hit Rate (tokens)       : {cache_rate:.2%}" if cache_rate is not None
+        else "Cache Hit Rate (tokens)       : n/a (no cache tokens reported)",
+        f"Cache Hit Tokens              : {int(cache_hit_tokens)}",
+        f"Cache Prompt Tokens           : {int(cache_prompt_tokens)}",
+        f"Questions Reporting Cache     : {cache_rows}/{valid_rows}",
         "--------------------------------------------------------------------------",
         "Breakdown by Category:",
         f"{'Category':<24} {'Correct':>8} {'Wrong':>8} {'Other':>8} {'Total':>8} {'Accuracy':>10}",

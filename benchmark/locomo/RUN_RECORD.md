@@ -115,6 +115,16 @@ cd E:\code\NeuraMem
 
 > 结论：54.48% 是 NeuraMem 记忆系统本体（自身检索 + deepseek lenient judge）的成绩；**不可直接与 OpenViking 官方 README 的 80–83%（Agent+OpenViking 记忆，doubao judge）横向比较**。
 
+### 6.2 KV Cache（前缀缓存）命中率统计
+
+自 2026-08-16 起，benchmark 输出 KV cache（前缀缓存）命中率统计，实现依据 docs/architecture_target.md #18 / 6.5（pi-mono parseChunkUsage 语义）：
+
+- **数据来源**：MiniMax OpenAI 兼容接口对 ≥512 token 的输入自动做前缀缓存（无需请求参数），并在 `usage.prompt_tokens_details.cached_tokens` 返回命中 token 数（实测 MiniMax-M3 每次调用均返回该字段，命中时延迟明显下降）。
+- **采集点**：LLMClient 内部统一解析每次成功调用的 usage（唯一解析点，不依赖 Langfuse），覆盖 answer / judge / usage judge 及叙事分组等全部 LLM 调用；`chat_json` 返回 dict 额外携带 `usage` 字段，流式路径解析最后一个 chunk 的 usage。
+- **口径**：命中率 = Σ cache_read_tokens / Σ prompt_tokens（token 加权，prompt_tokens = input + cache_read + cache_write）。每次调用同时兼容 DeepSeek 风格顶层字段（`prompt_cache_hit_tokens`，SDK extra="allow" 保留）。
+- **落盘**：`run_eval.py` 输出 CSV 每行新增 `cache_hit_tokens` / `cache_prompt_tokens`（该题 answer+judge+usage judge 的增量，按线程归属，多线程并发下互不串扰）；`stat_results.py` 汇总输出 `KV Cache Hit Rate (tokens)`、`Cache Hit Tokens`、`Cache Prompt Tokens`、`Questions Reporting Cache`，同时写入 summary.txt。
+- **说明**：首次调用也可能出现 cached_tokens（平台侧全局缓存）；benchmark 场景中命中主要来自固定 system prompt 与多题间重复检索的记忆内容，该指标可反映检索输出的重复度与缓存收益。
+
 ### 6.1 记忆工作流变量（Memory Workflow as a Benchmark Variable）
 
 记忆系统在评测中的工作形态是**核心变量之一**：评测脚本决定系统哪些能力被激活，因此不同工作流跑出的分数**不可直接对比**。**LLM 模型也是变量**（不同模型的推理能力直接影响分数）。目前定义三种工作流：
