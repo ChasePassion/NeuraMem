@@ -188,31 +188,62 @@ class UsageStats:
 
     Maintains a global accumulator plus per-thread counters so concurrent
     consumers (e.g. benchmark worker threads) can attribute call deltas to
-    their own work via thread_snapshot().
+    their own work via thread_snapshot(). Calls may carry a ``label``
+    (e.g. "answer" / "judge" / "usage_judge") so the benchmark can report
+    cache hit rates per call type instead of a single blended number.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._global = _UsageCounter()
+        self._by_label: Dict[str, _UsageCounter] = {}
         self._local = threading.local()
 
-    def record(self, usage: LLMUsage) -> None:
+    @staticmethod
+    def _label_counter(store: Dict[str, _UsageCounter], label: str) -> _UsageCounter:
+        counter = store.get(label)
+        if counter is None:
+            counter = store[label] = _UsageCounter()
+        return counter
+
+    def record(self, usage: LLMUsage, label: Optional[str] = None) -> None:
         with self._lock:
             self._global.add(usage)
-        counter = getattr(self._local, "counter", None)
-        if counter is None:
-            counter = self._local.counter = _UsageCounter()
-        counter.add(usage)
+            if label:
+                self._label_counter(self._by_label, label).add(usage)
+        thread = getattr(self._local, "counters", None)
+        if thread is None:
+            thread = self._local.counters = {"total": _UsageCounter(), "labels": {}}
+        thread["total"].add(usage)
+        if label:
+            self._label_counter(thread["labels"], label).add(usage)
 
-    def snapshot(self) -> Dict[str, Any]:
-        """Cumulative totals across all threads (thread-safe)."""
+    def snapshot(self, label: Optional[str] = None) -> Dict[str, Any]:
+        """Cumulative totals across all threads (thread-safe).
+
+        With label=None returns the aggregate over all calls; with a label,
+        only the calls recorded under that label.
+        """
         with self._lock:
+            if label:
+                counter = self._by_label.get(label)
+                return counter.as_dict() if counter else _UsageCounter().as_dict()
             return self._global.as_dict()
 
-    def thread_snapshot(self) -> Dict[str, Any]:
+    def thread_snapshot(self, label: Optional[str] = None) -> Dict[str, Any]:
         """Totals recorded on the calling thread (thread-safe)."""
-        counter = getattr(self._local, "counter", None)
-        return counter.as_dict() if counter else _UsageCounter().as_dict()
+        thread = getattr(self._local, "counters", None)
+        if thread is None:
+            return _UsageCounter().as_dict()
+        if label:
+            counter = thread["labels"].get(label)
+            return counter.as_dict() if counter else _UsageCounter().as_dict()
+        return thread["total"].as_dict()
+
+    def labels(self) -> list[str]:
+        """Labels seen so far across all threads."""
+        with self._lock:
+            return sorted(self._by_label.keys())
 
     @staticmethod
     def hit_rate_of(snapshot: Dict[str, Any]) -> Optional[float]:
@@ -317,12 +348,19 @@ class LLMClient:
         return {"extra_body": self._extra_body} if self._extra_body else {}
     
     @observe(as_type="generation")
-    def chat(self, system_prompt: str, user_message: str) -> str:
+    def chat(
+        self,
+        system_prompt: str,
+        user_message: str,
+        call_label: Optional[str] = None,
+    ) -> str:
         """Call LLM for text response.
         
         Args:
             system_prompt: System prompt for LLM
             user_message: User message to process
+            call_label: Optional usage label (e.g. "answer" / "judge") so the
+                benchmark can report per-call-type cache hit rates.
             
         Returns:
             LLM response text
@@ -337,18 +375,20 @@ class LLMClient:
                 "prompt_length": len(system_prompt) + len(user_message)
             }
         )
-        content, _ = self._chat_with_usage(system_prompt, user_message)
+        content, _ = self._chat_with_usage(system_prompt, user_message, call_label)
         return content
 
     def _chat_with_usage(
         self,
         system_prompt: str,
         user_message: str,
+        call_label: Optional[str] = None,
     ) -> tuple[str, Optional[LLMUsage]]:
         """Chat with primary (then fallback) provider; records usage stats.
 
         Returns (content, usage). The usage is the parsed response usage of
-        the successful call, also recorded into self._usage_stats.
+        the successful call, also recorded into self._usage_stats under the
+        given call_label (when provided).
         """
         try:
             content, usage = self._chat_with_retries(
@@ -382,16 +422,22 @@ class LLMClient:
 
         if usage is not None:
             usage.cost = estimate_cost(usage, self._pricing)
-            self._usage_stats.record(usage)
+            self._usage_stats.record(usage, call_label)
         return content, usage
     
     @observe(as_type="generation")
-    def chat_stream(self, system_prompt: str, user_message: str):
+    def chat_stream(
+        self,
+        system_prompt: str,
+        user_message: str,
+        call_label: Optional[str] = None,
+    ):
         """Call LLM for streaming text response.
         
         Args:
             system_prompt: System prompt for LLM
             user_message: User message to process
+            call_label: Optional usage label (see chat()).
             
         Yields:
             Text chunks from LLM response
@@ -412,6 +458,7 @@ class LLMClient:
                 model=self._model,
                 system_prompt=system_prompt,
                 user_message=user_message,
+                call_label=call_label,
             )
         except LLMCallError as primary_error:
             if not self._fallback_client:
@@ -427,6 +474,7 @@ class LLMClient:
                     model=self._fallback_model,
                     system_prompt=system_prompt,
                     user_message=user_message,
+                    call_label=call_label,
                 )
             except LLMCallError as fallback_error:
                 raise LLMCallError(
@@ -436,7 +484,12 @@ class LLMClient:
                 ) from fallback_error
     
     @observe(as_type="generation")
-    async def chat_stream_async(self, system_prompt: str, user_message: str):
+    async def chat_stream_async(
+        self,
+        system_prompt: str,
+        user_message: str,
+        call_label: Optional[str] = None,
+    ):
         """Async streaming chat using native AsyncOpenAI client.
         
         This method provides true async streaming without blocking the event loop.
@@ -445,6 +498,7 @@ class LLMClient:
         Args:
             system_prompt: System prompt for LLM
             user_message: User message to process
+            call_label: Optional usage label (see chat()).
             
         Yields:
             Text chunks from LLM response
@@ -466,6 +520,7 @@ class LLMClient:
                 model=self._model,
                 system_prompt=system_prompt,
                 user_message=user_message,
+                call_label=call_label,
             ):
                 yield chunk
         except LLMCallError as primary_error:
@@ -482,6 +537,7 @@ class LLMClient:
                     model=self._fallback_model,
                     system_prompt=system_prompt,
                     user_message=user_message,
+                    call_label=call_label,
                 ):
                     yield chunk
             except LLMCallError as fallback_error:
@@ -497,6 +553,7 @@ class LLMClient:
         model: str,
         system_prompt: str,
         user_message: str,
+        call_label: Optional[str] = None,
     ):
         """Async streaming with retry logic using RetryExecutor."""
         executor = RetryExecutor(
@@ -517,14 +574,14 @@ class LLMClient:
                 **self._extra_body_kwargs(),
             )
             async for chunk in response:
-                self._record_stream_usage(chunk)
+                self._record_stream_usage(chunk, call_label)
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
         
         async for item in executor.stream_async(do_stream):
             yield item
 
-    def _record_stream_usage(self, chunk: Any) -> None:
+    def _record_stream_usage(self, chunk: Any, call_label: Optional[str] = None) -> None:
         """Record usage carried by a stream chunk (architecture_target.md 6.5).
 
         OpenAI-compatible streams put the full usage on the final chunk
@@ -538,13 +595,14 @@ class LLMClient:
         usage = parse_usage(usage_obj)
         if usage is not None:
             usage.cost = estimate_cost(usage, self._pricing)
-            self._usage_stats.record(usage)
+            self._usage_stats.record(usage, call_label)
 
     def chat_json(
         self,
         system_prompt: str,
         user_message: str,
-        default: Dict[str, Any] = None
+        default: Dict[str, Any] = None,
+        call_label: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Call LLM and parse JSON response with safe fallback.
         
@@ -552,6 +610,7 @@ class LLMClient:
             system_prompt: System prompt for the LLM
             user_message: User message to process
             default: Default value to return if JSON parsing fails
+            call_label: Optional usage label (see chat()).
             
         Returns:
             Dict containing:
@@ -566,7 +625,9 @@ class LLMClient:
             default = {}
         
         try:
-            response_text, usage = self._chat_with_usage(system_prompt, user_message)
+            response_text, usage = self._chat_with_usage(
+                system_prompt, user_message, call_label
+            )
             parsed_data = self._safe_parse_json(response_text, default)
             
             return {
@@ -677,6 +738,7 @@ class LLMClient:
         model: str,
         system_prompt: str,
         user_message: str,
+        call_label: Optional[str] = None,
     ):
         """Call a specific client with retries for streaming using RetryExecutor."""
         executor = RetryExecutor(
@@ -697,7 +759,7 @@ class LLMClient:
                 **self._extra_body_kwargs(),
             )
             for chunk in response:
-                self._record_stream_usage(chunk)
+                self._record_stream_usage(chunk, call_label)
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
         

@@ -417,6 +417,77 @@ class TestLLMClient:
         # Global aggregation covers both
         assert client.usage_stats.snapshot()["calls"] == 2
 
+    def test_usage_stats_groups_by_label(self):
+        """UsageStats separates calls by label (benchmark per-type hit rates)."""
+        usage = self._make_usage_mock(prompt_tokens=200, cached_tokens=80)
+        response = self._make_response_mock(usage)
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.return_value = response
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            client.chat("system prompt", "user message", call_label="answer")
+            client.chat("system prompt", "user message", call_label="judge")
+            client.chat("system prompt", "user message")  # unlabeled
+
+        assert client.usage_stats.snapshot()["calls"] == 3
+        answer = client.usage_stats.snapshot("answer")
+        assert answer["calls"] == 1
+        assert answer["cache_read_tokens"] == 80
+        assert client.usage_stats.hit_rate_of(answer) == 80 / 200
+        judge = client.usage_stats.snapshot("judge")
+        assert judge["calls"] == 1
+        assert client.usage_stats.snapshot("usage_judge")["calls"] == 0
+        assert client.usage_stats.labels() == ["answer", "judge"]
+
+    def test_usage_stats_label_thread_snapshot(self):
+        """thread_snapshot(label) tracks per-label calls on the calling thread."""
+        usage = self._make_usage_mock(prompt_tokens=100, cached_tokens=10)
+        response = self._make_response_mock(usage)
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.return_value = response
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            client.chat("system prompt", "user message", call_label="answer")
+
+            seen = {}
+
+            def worker():
+                client.chat("system prompt", "user message", call_label="answer")
+                client.chat("system prompt", "user message", call_label="judge")
+                seen["worker_answer"] = client.usage_stats.thread_snapshot("answer")
+                seen["worker_total"] = client.usage_stats.thread_snapshot()
+
+            import threading
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join()
+
+        # Main thread sees only its own answer call
+        assert client.usage_stats.thread_snapshot("answer")["calls"] == 1
+        assert seen["worker_answer"]["calls"] == 1
+        assert seen["worker_total"]["calls"] == 2
+        # Global per-label aggregation covers both threads
+        assert client.usage_stats.snapshot("answer")["calls"] == 2
+        assert client.usage_stats.snapshot("judge")["calls"] == 1
+
+    def test_chat_json_accepts_call_label(self):
+        """chat_json() forwards the label into usage stats."""
+        usage = self._make_usage_mock(prompt_tokens=100, cached_tokens=20)
+        response = self._make_response_mock(usage)
+        response.choices[0].message.content = '{"ok": true}'
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.return_value = response
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            result = client.chat_json("system prompt", "user message", call_label="usage_judge")
+
+        assert result["usage"]["cache_read_tokens"] == 20
+        assert client.usage_stats.snapshot("usage_judge")["calls"] == 1
+        assert client.usage_stats.snapshot("answer")["calls"] == 0
+
     def test_estimate_cost_uses_pricing_table(self):
         """estimate_cost() applies per-million-token prices per component."""
         from src.memory_system.clients.llm import LLMUsage, estimate_cost
