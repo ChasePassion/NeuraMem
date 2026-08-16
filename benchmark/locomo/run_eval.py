@@ -26,6 +26,7 @@ dotenv.load_dotenv(PROJECT_ROOT / ".env")
 
 from src.memory_system import Memory, MemoryConfig
 from src.memory_system.clients import LLMClient
+from src.memory_system.clients.llm import UsageStats
 
 try:
     from benchmark.locomo.llm_config import apply_minimax_primary
@@ -66,6 +67,8 @@ QA_FIELDNAMES = [
     "timestamp",
     "cache_hit_tokens",
     "cache_prompt_tokens",
+    "answer_cache_hit_tokens",
+    "answer_cache_prompt_tokens",
 ]
 
 
@@ -131,10 +134,13 @@ def answer_question(
         reference_date="2023",
     )
 
-    # 3. Call LLM to generate answer
+    # 3. Call LLM to generate answer. Labeled "answer": the benchmark's
+    #    memory-system scoped cache hit rate counts only these calls (their
+    #    prompt embeds retrieved memories), not judge/usage-judge calls.
     raw_response = llm_client.chat(
         system_prompt="You are a helpful assistant answering questions about past conversations accurately.",
         user_message=prompt,
+        call_label="answer",
     )
 
     # Strip reasoning-think block emitted by reasoning models (e.g. MiniMax-M3)
@@ -208,6 +214,7 @@ def judge_single_response(
         raw = llm_client.chat(
             system_prompt=JUDGE_SYSTEM_PROMPT,
             user_message=prompt,
+            call_label="judge",
         )
         # Strip markdown code fences if present
         clean = raw.strip()
@@ -293,12 +300,14 @@ def main():
         # one worker thread, so the delta between snapshots is exactly the
         # tokens consumed by this question (answer + usage judge + judge).
         usage_before = llm_client.usage_stats.thread_snapshot()
+        answer_before = llm_client.usage_stats.thread_snapshot("answer")
         row = answer_question(memory, llm_client, item)
         if args.judge:
             label, reasoning = judge_single_response(llm_client, row)
             row["result"] = label
             row["reasoning"] = reasoning
         usage_after = llm_client.usage_stats.thread_snapshot()
+        answer_after = llm_client.usage_stats.thread_snapshot("answer")
         row["cache_hit_tokens"] = (
             usage_after["cache_read_tokens"] - usage_before["cache_read_tokens"]
         )
@@ -310,6 +319,20 @@ def main():
             usage_before["input_tokens"]
             + usage_before["cache_read_tokens"]
             + usage_before["cache_write_tokens"]
+        )
+        # Memory-system scoped slice: only the answer-generation call (the
+        # only LLM call whose prompt embeds the retrieved memories).
+        row["answer_cache_hit_tokens"] = (
+            answer_after["cache_read_tokens"] - answer_before["cache_read_tokens"]
+        )
+        row["answer_cache_prompt_tokens"] = (
+            answer_after["input_tokens"]
+            + answer_after["cache_read_tokens"]
+            + answer_after["cache_write_tokens"]
+        ) - (
+            answer_before["input_tokens"]
+            + answer_before["cache_read_tokens"]
+            + answer_before["cache_write_tokens"]
         )
 
         with write_lock:
@@ -331,26 +354,34 @@ def main():
     elapsed = time.time() - start_time
     logger.info(f"Evaluation complete! Processed {len(evaluated_rows)} questions in {elapsed:.1f}s")
 
-    # KV cache (prefix cache) hit-rate summary, from the same usage the
-    # client parsed on every LLM call (architecture_target.md 6.5).
+    # KV cache (prefix cache) hit-rate summary, split by call type
+    # (architecture_target.md 6.5). The memory-system scoped rate counts only
+    # "answer" calls (prompt embeds retrieved memories); judge / usage-judge
+    # calls use fixed evaluation templates and are reported separately.
+    def _prompt_of(snapshot: Dict[str, Any]) -> int:
+        return (
+            snapshot["input_tokens"]
+            + snapshot["cache_read_tokens"]
+            + snapshot["cache_write_tokens"]
+        )
+
+    def _rate_line(name: str, snapshot: Dict[str, Any]) -> str:
+        hit = snapshot["cache_read_tokens"]
+        prompt = _prompt_of(snapshot)
+        rate = UsageStats.hit_rate_of(snapshot)
+        if rate is None:
+            return f"{name}: no cache info (prompt={prompt} tokens, {snapshot['calls']} calls)"
+        return f"{name}: hit={hit}/{prompt} tokens over {snapshot['calls']} calls -> {rate:.2%}"
+
+    answer_total = llm_client.usage_stats.snapshot("answer")
+    judge_total = llm_client.usage_stats.snapshot("judge")
+    usage_judge_total = llm_client.usage_stats.snapshot("usage_judge")
     usage_total = llm_client.usage_stats.snapshot()
-    prompt_tokens = (
-        usage_total["input_tokens"]
-        + usage_total["cache_read_tokens"]
-        + usage_total["cache_write_tokens"]
-    )
-    hit_rate = llm_client.usage_stats.hit_rate()
-    if hit_rate is None:
-        logger.info(
-            f"KV cache: provider reported no cache tokens across {usage_total['calls']} "
-            f"LLM calls (prompt_tokens={prompt_tokens})"
-        )
-    else:
-        logger.info(
-            f"KV cache: hit={usage_total['cache_read_tokens']} tokens / "
-            f"prompt={prompt_tokens} tokens over {usage_total['calls']} LLM calls "
-            f"-> hit rate {hit_rate:.2%}"
-        )
+    logger.info("KV cache (prefix cache) hit rates by call type:")
+    logger.info("  " + _rate_line("answer      (memory-RAG, memory-system scoped)", answer_total))
+    logger.info("  " + _rate_line("judge       (fixed eval template)", judge_total))
+    logger.info("  " + _rate_line("usage_judge (fixed eval template)", usage_judge_total))
+    logger.info("  " + _rate_line("overall     (all calls)", usage_total))
 
 
 if __name__ == "__main__":

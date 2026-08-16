@@ -63,11 +63,14 @@ class MemoryUsageJudge:
             
             # Use MEMORY_RELEVANCE_FILTER_PROMPT imported at module level
             
-            # Call LLM to judge which memories were used
+            # Call LLM to judge which memories were used. Labeled so the
+            # benchmark can exclude auxiliary calls from the memory-system
+            # scoped cache hit rate (only "answer" calls count).
             response = self._llm_client.chat_json(
                 system_prompt=MEMORY_RELEVANCE_FILTER_PROMPT,
                 user_message=json.dumps(input_data, ensure_ascii=False),
-                default={"used_episodic_memories": []}
+                default={"used_episodic_memories": []},
+                call_label="usage_judge",
             )
             
             # chat_json returns {"parsed_data": {...}, "raw_response": ..., ...}

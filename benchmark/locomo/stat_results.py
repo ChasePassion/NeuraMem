@@ -50,6 +50,8 @@ def main():
     by_category = defaultdict(lambda: {"CORRECT": 0, "WRONG": 0, "OTHER": 0})
     cache_hit_tokens = 0
     cache_prompt_tokens = 0
+    answer_cache_hit_tokens = 0
+    answer_cache_prompt_tokens = 0
     cache_rows = 0
 
     with open(args.input, "r", encoding="utf-8", newline="") as f:
@@ -91,6 +93,15 @@ def main():
                     cache_rows += 1
                 except ValueError:
                     pass
+            answer_hit = row.get("answer_cache_hit_tokens", "")
+            if answer_hit:
+                try:
+                    answer_cache_hit_tokens += float(answer_hit)
+                    answer_cache_prompt_tokens += float(
+                        row.get("answer_cache_prompt_tokens", "")
+                    )
+                except ValueError:
+                    pass
 
     total_graded = correct + wrong
     accuracy = correct / total_graded if total_graded > 0 else 0.0
@@ -98,6 +109,19 @@ def main():
     cache_rate = (
         cache_hit_tokens / cache_prompt_tokens
         if cache_prompt_tokens > 0 else None
+    )
+    # Memory-system scoped rate: only the answer-generation call, whose prompt
+    # embeds the retrieved memories (aligned with OpenViking's eval, which
+    # counts tokens only for the answering call, not the judge).
+    answer_cache_rate = (
+        answer_cache_hit_tokens / answer_cache_prompt_tokens
+        if answer_cache_prompt_tokens > 0 else None
+    )
+    # Auxiliary calls (judge + usage judge) = overall minus the answer slice.
+    aux_prompt = cache_prompt_tokens - answer_cache_prompt_tokens
+    aux_cache_rate = (
+        (cache_hit_tokens - answer_cache_hit_tokens) / aux_prompt
+        if aux_prompt > 0 else None
     )
 
     output_lines = [
@@ -112,8 +136,14 @@ def main():
         f"Average Latency per Query     : {avg_time:.2f}s",
         "--------------------------------------------------------------------------",
         "KV Cache (Prefix Cache) Usage:",
-        f"Cache Hit Rate (tokens)       : {cache_rate:.2%}" if cache_rate is not None
-        else "Cache Hit Rate (tokens)       : n/a (no cache tokens reported)",
+        "Answer (memory-RAG) Hit Rate  : "
+        + (f"{answer_cache_rate:.2%}" if answer_cache_rate is not None else "n/a"),
+        "  Answer Hit / Prompt Tokens  : "
+        + f"{int(answer_cache_hit_tokens)} / {int(answer_cache_prompt_tokens)}",
+        "Aux Calls (judge+usage) Rate  : "
+        + (f"{aux_cache_rate:.2%}" if aux_cache_rate is not None else "n/a"),
+        "Overall Hit Rate (tokens)     : "
+        + (f"{cache_rate:.2%}" if cache_rate is not None else "n/a"),
         f"Cache Hit Tokens              : {int(cache_hit_tokens)}",
         f"Cache Prompt Tokens           : {int(cache_prompt_tokens)}",
         f"Questions Reporting Cache     : {cache_rows}/{valid_rows}",
