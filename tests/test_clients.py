@@ -212,6 +212,232 @@ class TestLLMClient:
                 assert result == "fallback response"
                 assert mock_openai_ctor.call_count == 2
 
+    # --- usage / KV cache accounting (architecture_target.md 6.5) ---
+
+    @staticmethod
+    def _make_usage_mock(
+        prompt_tokens: int = 100,
+        completion_tokens: int = 50,
+        cached_tokens=None,
+        deepseek_style: bool = False,
+    ):
+        """Build a response usage mock in MiniMax/OpenAI or DeepSeek shape."""
+        usage = Mock()
+        usage.prompt_tokens = prompt_tokens
+        usage.completion_tokens = completion_tokens
+        if deepseek_style:
+            usage.prompt_tokens_details = Mock()
+            usage.prompt_tokens_details.cached_tokens = None
+            usage.prompt_tokens_details.cache_write_tokens = None
+            usage.prompt_cache_hit_tokens = cached_tokens
+        else:
+            details = Mock()
+            details.cached_tokens = cached_tokens
+            details.cache_write_tokens = None
+            usage.prompt_tokens_details = details
+        usage.completion_tokens_details = Mock()
+        usage.completion_tokens_details.reasoning_tokens = 10
+        return usage
+
+    def _make_response_mock(self, usage):
+        message = Mock()
+        message.content = "Test response"
+        choice = Mock()
+        choice.message = message
+        response = Mock()
+        response.choices = [choice]
+        response.usage = usage
+        return response
+
+    def test_chat_records_minimax_style_cache_usage(self):
+        """chat() records prompt/cache tokens from prompt_tokens_details.cached_tokens."""
+        usage = self._make_usage_mock(prompt_tokens=200, cached_tokens=80)
+        response = self._make_response_mock(usage)
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.return_value = response
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            client.chat("system prompt", "user message")
+
+        stats = client.usage_stats.snapshot()
+        assert stats["calls"] == 1
+        assert stats["cache_read_tokens"] == 80
+        # prompt = input + cache_read + cache_write = 120 + 80 + 0
+        assert stats["input_tokens"] == 120
+        assert stats["total_tokens"] == 120 + 50 + 80
+        assert client.usage_stats.hit_rate() == 80 / 200
+
+    def test_chat_records_deepseek_style_cache_fields(self):
+        """chat() also picks up top-level prompt_cache_hit_tokens (DeepSeek)."""
+        usage = self._make_usage_mock(prompt_tokens=200, cached_tokens=60, deepseek_style=True)
+        response = self._make_response_mock(usage)
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.return_value = response
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            client.chat("system prompt", "user message")
+
+        stats = client.usage_stats.snapshot()
+        assert stats["cache_read_tokens"] == 60
+        assert client.usage_stats.hit_rate() == 60 / 200
+
+    def test_chat_without_usage_keeps_stats_empty(self):
+        """chat() with no usage in the response records nothing (hit_rate None)."""
+        response = self._make_response_mock(None)
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.return_value = response
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            client.chat("system prompt", "user message")
+
+        stats = client.usage_stats.snapshot()
+        assert stats["calls"] == 0
+        assert client.usage_stats.hit_rate() is None
+
+    def test_chat_json_includes_usage(self):
+        """chat_json() returns the parsed usage alongside parsed_data."""
+        usage = self._make_usage_mock(prompt_tokens=100, cached_tokens=30)
+        response = self._make_response_mock(usage)
+        response.choices[0].message.content = '{"key": "value"}'
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.return_value = response
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            result = client.chat_json("system prompt", "user message")
+
+        assert result["success"] is True
+        assert result["parsed_data"] == {"key": "value"}
+        assert result["usage"] == {
+            "input_tokens": 70,
+            "output_tokens": 50,
+            "cache_read_tokens": 30,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 10,
+            "total_tokens": 70 + 50 + 30,
+            "cost": 0.0,
+        }
+
+    def test_chat_json_includes_usage_on_parse_failure(self):
+        """chat_json() still returns usage when JSON parsing fails.
+
+        Note: a JSON parse miss is not an exception - success stays True and
+        parsed_data falls back to the default (original semantics).
+        """
+        usage = self._make_usage_mock(prompt_tokens=100, cached_tokens=0)
+        response = self._make_response_mock(usage)
+        response.choices[0].message.content = "not json"
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.return_value = response
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            result = client.chat_json("system prompt", "user message", default={"d": 1})
+
+        assert result["success"] is True
+        assert result["parsed_data"] == {"d": 1}
+        assert result["usage"] is not None
+        assert result["usage"]["input_tokens"] == 100
+
+    def test_stream_records_usage_from_final_chunk(self):
+        """chat_stream() records usage carried by the final stream chunk once."""
+        usage = self._make_usage_mock(prompt_tokens=100, cached_tokens=40)
+        chunk_mid = Mock()
+        chunk_mid.usage = None
+        chunk_mid.choices = [Mock()]
+        chunk_mid.choices[0].usage = None  # real SDK chunks have None usage
+        chunk_mid.choices[0].delta.content = "Hello "
+        chunk_last = Mock()
+        chunk_last.usage = usage
+        chunk_last.choices = [Mock()]
+        chunk_last.choices[0].usage = None
+        chunk_last.choices[0].delta.content = "world"
+
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.return_value = iter([chunk_mid, chunk_last])
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            text = "".join(client.chat_stream("system prompt", "user message"))
+
+        assert text == "Hello world"
+        stats = client.usage_stats.snapshot()
+        assert stats["calls"] == 1
+        assert stats["cache_read_tokens"] == 40
+        assert client.usage_stats.hit_rate() == 40 / 100
+
+    def test_stream_records_usage_from_choice(self):
+        """chat_stream() also reads usage from choice.usage (Moonshot style)."""
+        usage = self._make_usage_mock(prompt_tokens=100, cached_tokens=25)
+        choice = Mock()
+        choice.usage = usage
+        choice.delta.content = "payload"
+        chunk = Mock()
+        chunk.usage = None
+        chunk.choices = [choice]
+
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.return_value = iter([chunk])
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            text = "".join(client.chat_stream("system prompt", "user message"))
+
+        assert text == "payload"
+        assert client.usage_stats.snapshot()["cache_read_tokens"] == 25
+
+    def test_usage_stats_thread_snapshot_isolation(self):
+        """thread_snapshot() attributes calls to the recording thread only."""
+        usage = self._make_usage_mock(prompt_tokens=100, cached_tokens=10)
+        response = self._make_response_mock(usage)
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.return_value = response
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            client.chat("system prompt", "user message")
+
+            seen = {}
+
+            def worker():
+                client.chat("system prompt", "user message")
+                seen["worker"] = client.usage_stats.thread_snapshot()
+
+            import threading
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join()
+
+        # Main thread saw only its own call; worker saw only its own call
+        assert client.usage_stats.thread_snapshot()["calls"] == 1
+        assert seen["worker"]["calls"] == 1
+        # Global aggregation covers both
+        assert client.usage_stats.snapshot()["calls"] == 2
+
+    def test_estimate_cost_uses_pricing_table(self):
+        """estimate_cost() applies per-million-token prices per component."""
+        from src.memory_system.clients.llm import LLMUsage, estimate_cost
+
+        usage = LLMUsage(
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=2000,
+            cache_write_tokens=1000,
+        )
+        pricing = {
+            "input": 2.0,
+            "output": 8.0,
+            "cache_read": 0.4,
+            "cache_write": 2.5,
+        }
+        cost = estimate_cost(usage, pricing)
+        expected = (1000 * 2.0 + 500 * 8.0 + 2000 * 0.4 + 1000 * 2.5) / 1_000_000
+        assert cost == pytest.approx(expected)
+        assert estimate_cost(usage, None) == 0.0
+
 
 class TestMilvusStore:
     """Unit tests for MilvusStore CRUD operations."""
