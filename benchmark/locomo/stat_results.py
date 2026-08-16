@@ -59,14 +59,15 @@ def _rate(prompt: float, hit: float) -> float | None:
     return hit / prompt if prompt > 0 else None
 
 
-def load_ingest_usage(usage_dir: str) -> tuple[dict, list[str]]:
-    """Merge ingest-phase memory-system usage (manage + consolidate).
+def load_ingest_usage(usage_dir: str) -> tuple[dict, dict, list[str]]:
+    """Load ingest-phase memory-system usage from usage JSON files.
 
     Reads result/ingest_usage_stats*.json written by import_to_neuramem.py
     (serial run writes one file, parallel sample subprocesses write one per
-    sample). Returns (merged usage dict, list of files found).
+    sample). Returns (merged manage usage, merged consolidate usage, files).
     """
-    merged: dict = {}
+    manage_usage: dict = {}
+    consolidate_usage: dict = {}
     files = sorted(glob.glob(os.path.join(usage_dir, "ingest_usage_stats*.json")))
     for path in files:
         try:
@@ -74,10 +75,9 @@ def load_ingest_usage(usage_dir: str) -> tuple[dict, list[str]]:
                 payload = json.load(f)
         except (OSError, ValueError):
             continue
-        manage = payload.get("manage") or {}
-        consolidate = payload.get("consolidate") or {}
-        merged = _merge(merged, manage, consolidate)
-    return merged, files
+        manage_usage = _merge(manage_usage, payload.get("manage") or {})
+        consolidate_usage = _merge(consolidate_usage, payload.get("consolidate") or {})
+    return manage_usage, consolidate_usage, files
 
 
 def main():
@@ -176,20 +176,43 @@ def main():
     accuracy = correct / total_graded if total_graded > 0 else 0.0
     avg_time = total_time / valid_rows if valid_rows > 0 else 0.0
     cache_rate = _rate(cache_prompt_tokens, cache_hit_tokens)
-    # Eval-phase memory system (usage_judge + answer) from the QA CSV
-    eval_memory_rate = _rate(memory_cache_prompt_tokens, memory_cache_hit_tokens)
-    # Ingest-phase memory system (manage + consolidate) from the usage JSON
-    ingest_usage, ingest_files = load_ingest_usage(args.ingest_usage_dir)
-    ingest_prompt = _prompt_of(ingest_usage)
-    ingest_rate = _rate(ingest_prompt, ingest_usage["cache_read_tokens"])
-    # Whole memory system: ingest + eval phases
-    memory_system_prompt = ingest_prompt + memory_cache_prompt_tokens
-    memory_system_hit = ingest_usage["cache_read_tokens"] + memory_cache_hit_tokens
+    # Memory-system components (judge is an eval tool, excluded):
+    # - manage / consolidate: ingest phase, from the usage JSON files
+    # - usage_judge / answer: eval phase, from the QA CSV (CSV stores the
+    #   combined usage_judge+answer slice plus the answer-only slice, so the
+    #   usage_judge slice is the difference)
+    ingest_usage, consolidate_usage, ingest_files = load_ingest_usage(args.ingest_usage_dir)
+    component_manage = _prompt_of(ingest_usage), ingest_usage["cache_read_tokens"]
+    component_consolidate = (
+        _prompt_of(consolidate_usage),
+        consolidate_usage["cache_read_tokens"],
+    )
+    component_answer = answer_cache_prompt_tokens, answer_cache_hit_tokens
+    component_usage_judge = (
+        memory_cache_prompt_tokens - answer_cache_prompt_tokens,
+        memory_cache_hit_tokens - answer_cache_hit_tokens,
+    )
+    memory_system_prompt = (
+        component_manage[0]
+        + component_consolidate[0]
+        + component_usage_judge[0]
+        + component_answer[0]
+    )
+    memory_system_hit = (
+        component_manage[1]
+        + component_consolidate[1]
+        + component_usage_judge[1]
+        + component_answer[1]
+    )
     memory_system_rate = _rate(memory_system_prompt, memory_system_hit)
     # Eval-tool calls (judge): within the eval process only (CSV overall
     # minus the eval-phase memory-system slice; ingest is a separate process)
     aux_prompt = cache_prompt_tokens - memory_cache_prompt_tokens
     aux_rate = _rate(aux_prompt, cache_hit_tokens - memory_cache_hit_tokens)
+
+    def _component_line(name: str, prompt: float, hit: float) -> str:
+        rate = _rate(prompt, hit)
+        return f"  {name:<16}: " + (f"{rate:.2%}" if rate is not None else "n/a")
 
     output_lines = [
         "==========================================================================",
@@ -205,13 +228,14 @@ def main():
         "KV Cache (Prefix Cache) Usage:",
         "Memory System Hit Rate        : "
         + (f"{memory_system_rate:.2%}" if memory_system_rate is not None else "n/a")
-        + "  (ingest + eval, judge excluded)",
-        "  ingest  (manage+consolidate): "
-        + (f"{ingest_rate:.2%}" if ingest_rate is not None else "n/a")
+        + "  (manage + consolidate + usage_judge + answer; judge excluded)",
+        _component_line("manage", *component_manage)
         + f"  [{int(ingest_usage['calls'])} calls, "
         + (f"{len(ingest_files)} file(s)]" if ingest_files else "no usage file]"),
-        "  eval    (usage_judge+answer): "
-        + (f"{eval_memory_rate:.2%}" if eval_memory_rate is not None else "n/a"),
+        _component_line("consolidate", *component_consolidate)
+        + f"  [{int(consolidate_usage['calls'])} calls]",
+        _component_line("usage_judge", *component_usage_judge),
+        _component_line("answer", *component_answer),
         f"  Memory System Hit / Prompt  : {int(memory_system_hit)} / {int(memory_system_prompt)}",
         "Judge (eval tool, excluded)   : "
         + (f"{aux_rate:.2%}" if aux_rate is not None else "n/a"),
