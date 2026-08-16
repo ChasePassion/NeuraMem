@@ -69,6 +69,8 @@ QA_FIELDNAMES = [
     "cache_prompt_tokens",
     "answer_cache_hit_tokens",
     "answer_cache_prompt_tokens",
+    "memory_cache_hit_tokens",
+    "memory_cache_prompt_tokens",
 ]
 
 
@@ -301,6 +303,7 @@ def main():
         # tokens consumed by this question (answer + usage judge + judge).
         usage_before = llm_client.usage_stats.thread_snapshot()
         answer_before = llm_client.usage_stats.thread_snapshot("answer")
+        usage_judge_before = llm_client.usage_stats.thread_snapshot("usage_judge")
         row = answer_question(memory, llm_client, item)
         if args.judge:
             label, reasoning = judge_single_response(llm_client, row)
@@ -308,6 +311,7 @@ def main():
             row["reasoning"] = reasoning
         usage_after = llm_client.usage_stats.thread_snapshot()
         answer_after = llm_client.usage_stats.thread_snapshot("answer")
+        usage_judge_after = llm_client.usage_stats.thread_snapshot("usage_judge")
         row["cache_hit_tokens"] = (
             usage_after["cache_read_tokens"] - usage_before["cache_read_tokens"]
         )
@@ -320,19 +324,29 @@ def main():
             + usage_before["cache_read_tokens"]
             + usage_before["cache_write_tokens"]
         )
-        # Memory-system scoped slice: only the answer-generation call (the
-        # only LLM call whose prompt embeds the retrieved memories).
-        row["answer_cache_hit_tokens"] = (
-            answer_after["cache_read_tokens"] - answer_before["cache_read_tokens"]
-        )
-        row["answer_cache_prompt_tokens"] = (
-            answer_after["input_tokens"]
-            + answer_after["cache_read_tokens"]
-            + answer_after["cache_write_tokens"]
-        ) - (
-            answer_before["input_tokens"]
-            + answer_before["cache_read_tokens"]
-            + answer_before["cache_write_tokens"]
+        # Memory-system scoped slice (eval phase): answer + usage_judge calls
+        # (the LLM calls owned by the memory system; judge is an eval tool).
+        def _delta(label_before, label_after):
+            return {
+                "hit": label_after["cache_read_tokens"] - label_before["cache_read_tokens"],
+                "prompt": (
+                    label_after["input_tokens"]
+                    + label_after["cache_read_tokens"]
+                    + label_after["cache_write_tokens"]
+                ) - (
+                    label_before["input_tokens"]
+                    + label_before["cache_read_tokens"]
+                    + label_before["cache_write_tokens"]
+                ),
+            }
+
+        answer_delta = _delta(answer_before, answer_after)
+        usage_judge_delta = _delta(usage_judge_before, usage_judge_after)
+        row["answer_cache_hit_tokens"] = answer_delta["hit"]
+        row["answer_cache_prompt_tokens"] = answer_delta["prompt"]
+        row["memory_cache_hit_tokens"] = answer_delta["hit"] + usage_judge_delta["hit"]
+        row["memory_cache_prompt_tokens"] = (
+            answer_delta["prompt"] + usage_judge_delta["prompt"]
         )
 
         with write_lock:
@@ -355,15 +369,26 @@ def main():
     logger.info(f"Evaluation complete! Processed {len(evaluated_rows)} questions in {elapsed:.1f}s")
 
     # KV cache (prefix cache) hit-rate summary, split by call type
-    # (architecture_target.md 6.5). The memory-system scoped rate counts only
-    # "answer" calls (prompt embeds retrieved memories); judge / usage-judge
-    # calls use fixed evaluation templates and are reported separately.
+    # (architecture_target.md 6.5). The memory-system scoped rate covers the
+    # memory system's own LLM calls (eval phase: usage_judge + answer; ingest
+    # phase manage/consolidate are merged in by stat_results.py from the
+    # ingest usage JSON). Judge calls are an evaluation tool, not part of the
+    # memory system, and are reported separately.
     def _prompt_of(snapshot: Dict[str, Any]) -> int:
         return (
             snapshot["input_tokens"]
             + snapshot["cache_read_tokens"]
             + snapshot["cache_write_tokens"]
         )
+
+    def _merge(*snapshots: Dict[str, Any]) -> Dict[str, Any]:
+        merged = {k: 0 for k in ("calls", "input_tokens", "output_tokens",
+                                 "cache_read_tokens", "cache_write_tokens",
+                                 "reasoning_tokens", "total_tokens", "cost")}
+        for s in snapshots:
+            for k in merged:
+                merged[k] += s.get(k, 0)
+        return merged
 
     def _rate_line(name: str, snapshot: Dict[str, Any]) -> str:
         hit = snapshot["cache_read_tokens"]
@@ -374,13 +399,16 @@ def main():
         return f"{name}: hit={hit}/{prompt} tokens over {snapshot['calls']} calls -> {rate:.2%}"
 
     answer_total = llm_client.usage_stats.snapshot("answer")
-    judge_total = llm_client.usage_stats.snapshot("judge")
     usage_judge_total = llm_client.usage_stats.snapshot("usage_judge")
+    judge_total = llm_client.usage_stats.snapshot("judge")
     usage_total = llm_client.usage_stats.snapshot()
+    memory_eval_total = _merge(answer_total, usage_judge_total)
     logger.info("KV cache (prefix cache) hit rates by call type:")
-    logger.info("  " + _rate_line("answer      (memory-RAG, memory-system scoped)", answer_total))
-    logger.info("  " + _rate_line("judge       (fixed eval template)", judge_total))
-    logger.info("  " + _rate_line("usage_judge (fixed eval template)", usage_judge_total))
+    logger.info("  " + _rate_line(
+        "memory-system eval (usage_judge+answer)", memory_eval_total))
+    logger.info("  " + _rate_line("  - answer      (memory-RAG generation)", answer_total))
+    logger.info("  " + _rate_line("  - usage_judge (memory usage check)", usage_judge_total))
+    logger.info("  " + _rate_line("judge       (eval tool, excluded)", judge_total))
     logger.info("  " + _rate_line("overall     (all calls)", usage_total))
 
 
