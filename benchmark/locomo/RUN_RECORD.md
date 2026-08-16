@@ -122,11 +122,12 @@ cd E:\code\NeuraMem
 - **数据来源**：MiniMax OpenAI 兼容接口对 ≥512 token 的输入自动做前缀缓存（无需请求参数），并在 `usage.prompt_tokens_details.cached_tokens` 返回命中 token 数（实测 MiniMax-M3 每次调用均返回该字段，命中时延迟明显下降）。
 - **采集点**：LLMClient 内部统一解析每次成功调用的 usage（唯一解析点，不依赖 Langfuse），覆盖 answer / judge / usage judge 及叙事分组等全部 LLM 调用；`chat_json` 返回 dict 额外携带 `usage` 字段，流式路径解析最后一个 chunk 的 usage。
 - **口径**：命中率 = Σ cache_read_tokens / Σ prompt_tokens（token 加权，prompt_tokens = input + cache_read + cache_write）。每次调用同时兼容 DeepSeek 风格顶层字段（`prompt_cache_hit_tokens`，SDK extra="allow" 保留）。
-- **按调用类型区分（与 OpenViking 对齐）**：LLM 调用带 `call_label`（answer / judge / usage_judge），报告分三个口径：
-  - **Answer (memory-RAG) Hit Rate —— 记忆系统口径主指标**：只统计 answer 生成调用（其 prompt 内嵌检索记忆，命中反映检索内容的跨题复用/前缀友好度）；OpenViking 的 eval 同样只统计回答环节的 token（judge 独立不计入）；
-  - **Aux Calls (judge+usage) Rate**：判分与 usage judge 的合并命中率（固定评测模板，与记忆系统无关，单独报告避免稀释主指标）；
-  - **Overall Hit Rate**：全部调用，保留作参考。
-- **落盘**：`run_eval.py` 输出 CSV 每行新增 `cache_hit_tokens` / `cache_prompt_tokens`（该题全部调用增量）与 `answer_cache_hit_tokens` / `answer_cache_prompt_tokens`（该题 answer 调用增量；按线程归属，多线程并发下互不串扰）；`stat_results.py` 汇总输出上述三个口径的命中率，同时写入 summary.txt。
+- **按调用类型区分（整个记忆系统口径）**：LLM 调用带 `call_label`，覆盖记忆系统自身的全部 LLM 环节：
+  - **ingest 阶段**：`manage`（EpisodicMemoryManager CRUD 决策）、`consolidate`（SemanticWriter 语义提炼）——由 import_to_neuramem.py 在 ingest 结束时写入 `result/ingest_usage_stats*.json`；
+  - **eval 阶段**：`usage_judge`（MemoryUsageJudge）、`answer`（记忆增强回答生成，prompt 内嵌检索记忆）——随 QA CSV 落盘；
+  - **judge 判分不属于记忆系统**（评测工具），单独报告，不计入记忆系统命中率。
+- **主指标**：**Memory System Hit Rate = ingest（manage+consolidate）+ eval（usage_judge+answer）合并的 token 加权命中率**；报告同时拆分 ingest / eval 两段、judge（排除项）与 overall（参考）。
+- **落盘**：`run_eval.py` 输出 CSV 每行新增 `cache_hit_tokens` / `cache_prompt_tokens`（该题全部调用增量）、`answer_cache_*`（answer 增量）、`memory_cache_*`（usage_judge+answer 增量；按线程归属，多线程并发下互不串扰）；`stat_results.py` 汇总 CSV 与 `--ingest-usage-dir`（默认 result/）下的 ingest_usage_stats*.json，输出上述口径，同时写入 summary.txt。
 - **说明**：首次调用也可能出现 cached_tokens（平台侧全局缓存）；benchmark 场景中 answer 调用命中主要来自固定 system prompt 与多题间重复检索的记忆内容，该指标可反映检索输出的重复度与缓存收益。
 
 ### 6.1 记忆工作流变量（Memory Workflow as a Benchmark Variable）

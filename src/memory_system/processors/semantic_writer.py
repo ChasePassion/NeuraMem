@@ -68,11 +68,13 @@ class SemanticWriter:
             "facts": []
         }
         
-        # Call LLM for batch extraction
+        # Call LLM for batch extraction. Labeled "consolidate" so benchmark
+        # cache hit rates can cover the whole memory system (ingest phase).
         result = self._llm.chat_json(
             system_prompt=self._prompt,
             user_message=user_message,
-            default=default_response
+            default=default_response,
+            call_label="consolidate",
         )
         
         # Parse response - chat_json returns {"parsed_data": {...}, "raw_response": ..., ...}

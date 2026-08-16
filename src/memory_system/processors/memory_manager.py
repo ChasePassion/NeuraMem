@@ -94,7 +94,8 @@ class EpisodicMemoryManager:
         llm_response = self._llm.chat_json(
             system_prompt=self._prompt,
             user_message=json.dumps(input_data, ensure_ascii=False),
-            default={"add": [], "update": [], "delete": []}
+            default={"add": [], "update": [], "delete": []},
+            call_label="manage",
         )
         
         # 提取解析后的数据

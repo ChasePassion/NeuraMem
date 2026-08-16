@@ -158,6 +158,31 @@ def import_sample(
     return total_added
 
 
+def _write_ingest_usage(llm_client: Any, output_dir: str, sample_idx: Optional[int]) -> None:
+    """Persist ingest-phase memory-system usage for the final report.
+
+    Written per process so parallel sample-level subprocesses do not clobber
+    each other: serial ingest writes ingest_usage_stats.json, sample-scoped
+    processes write ingest_usage_stats_{sample}.json. stat_results.py globs
+    and merges all of them.
+    """
+    stats = llm_client.usage_stats
+    payload = {
+        "sample_index": sample_idx,
+        "manage": stats.snapshot("manage"),
+        "consolidate": stats.snapshot("consolidate"),
+        "total": stats.snapshot(),
+    }
+    os.makedirs(output_dir, exist_ok=True)
+    if sample_idx is not None:
+        path = os.path.join(output_dir, f"ingest_usage_stats_{sample_idx}.json")
+    else:
+        path = os.path.join(output_dir, "ingest_usage_stats.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    logger.info(f"Ingest usage stats written to {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Import LoCoMo conversations into NeuraMem")
     parser.add_argument("--input", default="data/locomo10.json", help="Path to locomo10.json")
@@ -165,6 +190,11 @@ def main():
     parser.add_argument("--max-sessions", type=int, default=None, help="Max sessions per sample")
     parser.add_argument("--milvus-uri", default=None, help="Milvus connection URI (defaults to .env or neuramem_bench.db)")
     parser.add_argument("--no-reset", action="store_true", help="Do not reset existing user memories before ingest")
+    parser.add_argument(
+        "--usage-output-dir",
+        default="result",
+        help="Directory for ingest usage stats JSON (merged by stat_results.py)",
+    )
     args = parser.parse_args()
 
     config = MemoryConfig()
@@ -194,6 +224,9 @@ def main():
 
     elapsed = time.time() - start_time
     logger.info(f"Import complete! Total memories added: {total_all_memories} in {elapsed:.1f}s")
+
+    # Persist memory-system (manage + consolidate) usage for the merged report.
+    _write_ingest_usage(memory._llm_client, args.usage_output_dir, args.sample)
 
 
 if __name__ == "__main__":

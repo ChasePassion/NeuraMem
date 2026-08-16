@@ -8,7 +8,7 @@ from src.memory_system.processors.semantic_writer import SemanticWriter
 
 
 class MockLLM:
-    def chat_json(self, system_prompt, user_message, default):
+    def chat_json(self, system_prompt, user_message, default, call_label=None):
         return {
             "parsed_data": default,
             "raw_response": "",
@@ -26,7 +26,7 @@ class MockLLMWithFacts:
     def __init__(self, facts):
         self.facts = facts
     
-    def chat_json(self, system_prompt, user_message, default):
+    def chat_json(self, system_prompt, user_message, default, call_label=None):
         if self.facts:
             return {
                 "parsed_data": {
