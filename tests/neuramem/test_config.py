@@ -1,10 +1,13 @@
 """Unit tests for the layered pydantic-settings configuration (step 1).
 
-Sub-configs read their own prefixed env vars; these tests clear the
-relevant variables first so results do not depend on the developer's
-environment (the repo .env only carries legacy-prefixed vars, which the
-new schema ignores).
+Sub-configs read their own prefixed env vars; the autouse fixture makes
+tests hermetic: relevant variables are deleted from the environment and
+the CWD moves to a fresh tmp dir so the developer's .env (which may carry
+legacy-prefixed vars) never leaks in.
 """
+
+import logging
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -18,14 +21,20 @@ from neuramem.config import (
 
 _ALL_NEW_ENV_VARS = [
     "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_EXTRA_BODY",
-    "EMBEDDING_API_KEY", "EMBEDDING_DIM", "STORE_URI", "RETRIEVAL_K_EPISODIC",
+    "LLM_MAX_RETRIES", "LLM_BASE_DELAY", "LLM_MAX_DELAY", "LLM_MAX_RETRY_AFTER",
+    "EMBEDDING_API_KEY", "EMBEDDING_BASE_URL", "EMBEDDING_MODEL", "EMBEDDING_DIM",
+    "STORE_URI", "STORE_COLLECTION_NAME",
+    "RETRIEVAL_K_EPISODIC", "RETRIEVAL_K_SEMANTIC",
+    "LANGFUSE_ENABLED",
 ]
 
 
 @pytest.fixture(autouse=True)
-def _clean_new_env(monkeypatch):
+def _clean_new_env(monkeypatch, tmp_path):
     for var in _ALL_NEW_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
+    # fresh CWD without any .env anywhere up the tree -> hermetic
+    monkeypatch.chdir(tmp_path)
 
 
 class TestMemoryConfig:
@@ -104,8 +113,41 @@ class TestSubConfigValidation:
             LLMConfig(base_url="https://x")  # api_key and model missing
 
     def test_sub_configs_constructible_directly_for_tests(self):
-        # _env_file=None isolates from the developer's .env (which may carry
-        # legacy LLM_EXTRA_BODY / LLM_MAX_RETRIES from the W3 setup)
+        # _env_file=None isolates from any .env even outside the hermetic
+        # fixture (e.g. legacy LLM_EXTRA_BODY / LLM_MAX_RETRIES from W3)
         llm = LLMConfig(base_url="b", api_key="k", model="m", _env_file=None)
         assert llm.extra_body is None
         assert llm.max_retries == 3
+
+    def test_env_file_discovered_upward_from_cwd(self, monkeypatch, tmp_path):
+        """Scripts run from subdirectories still find the repo .env (#4)."""
+        (tmp_path / ".env").write_text(
+            "LLM_BASE_URL=https://from-parent-env\n"
+            "LLM_API_KEY=parent-key\n"
+            "LLM_MODEL=parent-model\n"
+            "EMBEDDING_API_KEY=e\n"
+            "STORE_URI=u\n",
+            encoding="utf-8",
+        )
+        sub = tmp_path / "sub" / "deep"
+        sub.mkdir(parents=True)
+        monkeypatch.chdir(sub)
+
+        config = MemoryConfig()
+
+        assert config.llm.base_url == "https://from-parent-env"
+        assert config.llm.api_key.get_secret_value() == "parent-key"
+
+    def test_inherited_non_defaults_are_logged(self, caplog):
+        """A legacy LLM_MAX_RETRIES in .env changes the retry budget visibly (#5)."""
+        # the autouse fixture already moved us into a fresh tmp cwd
+        (Path.cwd() / ".env").write_text(
+            "LLM_BASE_URL=https://x\nLLM_API_KEY=k\nLLM_MODEL=m\n"
+            "EMBEDDING_API_KEY=e\nSTORE_URI=u\nLLM_MAX_RETRIES=10\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.INFO, logger="neuramem.config"):
+            MemoryConfig()
+        joined = " ".join(r.getMessage() for r in caplog.records)
+        assert "non-default" in joined
+        assert "'max_retries': 10" in joined

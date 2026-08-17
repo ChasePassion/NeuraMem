@@ -9,15 +9,42 @@ prefix-per-section avoids that without renaming fields to camelCase.)
 Misconfiguration fails at construction time, not at first use: building
 MemoryConfig() without the required env/args raises ValidationError.
 
+.env discovery mirrors the legacy load_dotenv tolerance: MemoryConfig()
+searches the nearest .env from the process CWD **upward** (so scripts run
+from subdirectories still find the repo .env), while direct sub-config
+construction reads the plain CWD-relative ".env".
+
+Construction also logs any non-default values in effect, so inherited
+settings (e.g. a legacy LLM_MAX_RETRIES in .env) are visible instead of
+silent.
+
 The legacy dataclass config (src/memory_system/config.py) and its env
 names (DEEPSEEK_*, SILICONFLOW_*, ...) stay untouched until the legacy
 package is removed in implementation plan step 4.
 """
 
-from typing import Optional
+import logging
+from pathlib import Path
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_env_file() -> str:
+    """Nearest .env from CWD upward; falls back to plain ".env".
+
+    Replicates the legacy dotenv tolerance for running scripts out of
+    subdirectories; resolution happens per MemoryConfig() construction.
+    """
+    current = Path.cwd()
+    for candidate in (current, *current.parents):
+        env_path = candidate / ".env"
+        if env_path.is_file():
+            return str(env_path)
+    return ".env"
 
 
 class LLMConfig(BaseSettings):
@@ -124,7 +151,8 @@ class MemoryConfig(BaseModel):
     """Root configuration aggregating all sub-configs.
 
     Defaults are env-backed: MemoryConfig() reads each section from its
-    prefixed env vars (and .env). Sections can also be passed explicitly:
+    prefixed env vars and the nearest .env (searched from CWD upward).
+    Sections can also be passed explicitly:
     MemoryConfig(llm=LLMConfig(base_url=..., api_key=..., model=...), ...).
 
     Env example:
@@ -136,8 +164,44 @@ class MemoryConfig(BaseModel):
         STORE_URI=http://localhost:19530
     """
 
-    llm: LLMConfig = Field(default_factory=LLMConfig)
-    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
-    store: StoreConfig = Field(default_factory=StoreConfig)
-    retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
-    langfuse: LangfuseConfig = Field(default_factory=LangfuseConfig)
+    llm: LLMConfig = Field(
+        default_factory=lambda: LLMConfig(_env_file=_resolve_env_file())
+    )
+    embedding: EmbeddingConfig = Field(
+        default_factory=lambda: EmbeddingConfig(_env_file=_resolve_env_file())
+    )
+    store: StoreConfig = Field(
+        default_factory=lambda: StoreConfig(_env_file=_resolve_env_file())
+    )
+    retrieval: RetrievalConfig = Field(
+        default_factory=lambda: RetrievalConfig(_env_file=_resolve_env_file())
+    )
+    langfuse: LangfuseConfig = Field(
+        default_factory=lambda: LangfuseConfig(_env_file=_resolve_env_file())
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Log non-default settings so inherited values are visible.
+
+        A legacy .env carrying LLM_MAX_RETRIES=10 silently changes the
+        retry budget from the documented 3-attempt default; this log makes
+        the effective profile explicit at construction (findings #5,
+        implementation plan notes).
+        """
+        non_defaults: dict[str, dict[str, Any]] = {}
+        for section_name in ("llm", "embedding", "store", "retrieval", "langfuse"):
+            section = getattr(self, section_name)
+            diff: dict[str, Any] = {}
+            for field_name, field_info in type(section).model_fields.items():
+                default = field_info.default
+                if default is not None and getattr(section, field_name) != default:
+                    value = getattr(section, field_name)
+                    diff[field_name] = (
+                        value if not isinstance(value, SecretStr) else "set"
+                    )
+            if diff:
+                non_defaults[section_name] = diff
+        if non_defaults:
+            logger.info(
+                "MemoryConfig: non-default settings in effect: %s", non_defaults
+            )

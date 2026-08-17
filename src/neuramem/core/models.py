@@ -21,6 +21,9 @@ class MemoryRecord(BaseModel):
     - group_id: narrative group ID (-1 = ungrouped)
     - metadata: caller-owned passthrough fields (architecture_target.md 8.2);
       written to dynamic fields, filterable, never interpreted by the library
+    - retired: library-owned tombstone for conflict elimination (#20) — a
+      retired record is permanently filtered out of retrieval; maps to a
+      dynamic field and travels with upsert (no separate write path)
     - vector: embedding; populated only when explicitly requested from the
       store (e.g. centroid recomputation), never rendered or serialized by
       the public API paths
@@ -33,6 +36,7 @@ class MemoryRecord(BaseModel):
     chat_id: str = ""
     text: str = ""
     group_id: int = -1
+    retired: bool = False
     metadata: Optional[dict[str, Any]] = None
     vector: Optional[list[float]] = None
 

@@ -94,5 +94,6 @@ class TestValueObjects:
     def test_memory_record_optional_fields_default(self):
         record = MemoryRecord()
         assert record.group_id == -1
+        assert record.retired is False
         assert record.metadata is None
         assert record.vector is None
