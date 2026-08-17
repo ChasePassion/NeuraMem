@@ -64,7 +64,7 @@ You will receive exactly ONE JSON object with the following structure:
 - `existing_semantic`:
   - Each object is one semantic memory that is ALREADY stored, with its `id` and `text`.
   - You MUST use these to avoid creating duplicate or near-duplicate semantic memories.
-  - If the episodic evidence clearly CONTRADICTICS an existing semantic memory (the stored fact is
+  - If the episodic evidence clearly CONTRADICTS an existing semantic memory (the stored fact is
     now outdated or superseded by newer evidence), include its `id` in "retired_semantic_ids".
 
 You MUST base your reasoning ONLY on these two inputs.

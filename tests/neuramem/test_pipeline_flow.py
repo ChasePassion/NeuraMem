@@ -167,6 +167,44 @@ class TestManage:
         texts = {r.text for r in records}
         assert "The user visited Hangzhou twice on business trips." in texts
 
+    @pytest.mark.asyncio
+    async def test_update_cleans_group_membership(self):
+        """Updating a grouped memory must drop it from its group (centroid,
+        size, and empty-group deletion) — not just reset its group_id."""
+        llm = ScriptedLLM()
+        llm.on_json("manage", _default_manage_script)
+        llm.on_json("usage_judge", _judge_hangzhou_script)
+        store = InMemoryStore()
+        memory = _make_memory(llm=llm, store=store, k_episodic=5)
+        await memory.manage_async("I went to Hangzhou last week.", "nice", "u1", "c1")
+        result = await memory.search_async("hangzhou", "u1")
+        await memory.report_usage_async(result, "You visited Hangzhou!")
+        groups = await store.list_groups("u1")
+        assert len(groups) == 1 and groups[0].size == 2
+
+        hangzhou = [
+            r for r in await store.query(MemoryFilter(user_id="u1", memory_type="episodic"))
+            if "Hangzhou" in r.text
+        ]
+
+        def update_first(payload):
+            target = payload["episodic_memories"][0]
+            return {
+                "add": [],
+                "update": [{
+                    "id": target["id"],
+                    "old_text": target["text"],
+                    "new_text": "The user visited Hangzhou twice on business trips.",
+                }],
+                "delete": [],
+            }
+
+        llm.on_json("manage", update_first)
+        await memory.manage_async("I went twice actually.", "ok", "u1", "c1")
+        # group must no longer count the updated member
+        groups_after = await store.list_groups("u1")
+        assert len(groups_after) == 1 and groups_after[0].size == 1
+
 
 class TestSearchAndClosedLoop:
     @pytest.mark.asyncio
@@ -299,6 +337,35 @@ class TestConsolidate:
         ).SemanticWriter(BadJsonLLM())
         stats = await memory.consolidate_async("u1")
         assert stats.semantic_created == 0
+
+    @pytest.mark.asyncio
+    async def test_garbage_retire_ids_ignored_without_crash(self):
+        """Model garbage in retired_semantic_ids must not crash consolidation."""
+        llm = ScriptedLLM()
+        llm.on_json("manage", _default_manage_script)
+        store = InMemoryStore()
+        memory = _make_memory(llm=llm, store=store)
+        await memory.manage_async("I went to Hangzhou last week.", "nice", "u1", "c1")
+        from neuramem.core.models import MemoryRecord
+
+        seeded = await store.insert([
+            MemoryRecord(user_id="u1", memory_type="semantic", ts=1, chat_id="c1",
+                         text="The user lives in Shanghai.", vector=[0.0, 0.0, 1.0, 0.0]),
+        ])
+
+        def garbage_script(payload):
+            return {
+                "write_semantic": False,
+                "facts": [],
+                "retired_semantic_ids": [None, "abc", {"x": 1}, seeded[0], "not-an-int"],
+            }
+
+        llm.on_json("consolidate", garbage_script)
+        stats = await memory.consolidate_async("u1")  # must not raise
+        assert stats.semantic_created == 0
+        all_semantic = await store.query(MemoryFilter(user_id="u1", memory_type="semantic"))
+        retired = [r for r in all_semantic if r.retired]
+        assert [r.id for r in retired] == [seeded[0]]  # only the valid id applied
 
 
 class TestDeleteAndReset:

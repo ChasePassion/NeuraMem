@@ -12,8 +12,6 @@ channel must never break the consumer's answer path.
 
 import json
 import logging
-from typing import Optional
-
 from neuramem.core.models import MemoryRecord
 from neuramem.core.ports import LLM
 from neuramem.prompts import MEMORY_RELEVANCE_FILTER_PROMPT

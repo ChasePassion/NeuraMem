@@ -89,12 +89,17 @@ class InMemoryStore:
         return ids
 
     async def upsert(self, records: list[MemoryRecord]) -> list[int]:
+        """Update in place by id; a record without a vector keeps the stored
+        one (parity with the Milvus adapter's partial-update merge — e.g.
+        flipping the retired flag must not wipe the embedding)."""
         ids = []
         for record in records:
             record_id = record.id if record.id > 0 else self._next_id
             self._next_id = max(self._next_id, record_id + 1)
             stored = record.model_copy()
             stored.id = record_id
+            if stored.vector is None and record_id in self._memories:
+                stored.vector = self._memories[record_id].vector
             self._memories[record_id] = stored
             ids.append(record_id)
         return ids

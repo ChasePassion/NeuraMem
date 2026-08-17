@@ -67,7 +67,16 @@ class SemanticWriter:
         parsed = result.parsed_data
         known_ids = {m.id for m in existing_semantic}
         raw_retire = parsed.get("retired_semantic_ids", []) or []
-        retire_ids = [int(i) for i in raw_retire if int(i) in known_ids]
+        if not isinstance(raw_retire, list):
+            raw_retire = []
+        retire_ids = []
+        for item in raw_retire:
+            try:
+                candidate = int(item)
+            except (TypeError, ValueError):
+                continue  # garbage from the model must not crash consolidation
+            if candidate in known_ids:
+                retire_ids.append(candidate)
         facts = [str(f) for f in parsed.get("facts", []) if f]
         write_semantic = bool(parsed.get("write_semantic", False))
 

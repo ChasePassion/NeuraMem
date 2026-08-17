@@ -231,6 +231,18 @@ class Memory:
             logger.warning("update target %s not found", op.memory_id)
             return
         original = records[0]
+        # group membership cleanup BEFORE resetting group_id: the record
+        # leaves its group here (legacy did this via delete-then-reinsert),
+        # so the centroid/size must drop it too — otherwise the group keeps
+        # counting a member it no longer has, and a last-member update
+        # leaves an orphan group that can absorb new memories
+        if original.group_id != -1:
+            try:
+                await self._narrative.delete_memory_from_group(
+                    original.id, user_id
+                )
+            except Exception as e:  # noqa: BLE001 - cleanup is best effort
+                logger.warning("group cleanup for %s failed: %s", original.id, e)
         embeddings = await self._embedder.embed([op.text])
         if not embeddings:
             logger.warning("update %s failed: embedding generation failed", op.memory_id)
