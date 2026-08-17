@@ -7,7 +7,7 @@ NeuraMem 记忆系统 REST API 接口文档。
 ```bash
 # 启动服务
 cd e:\code\NeuraMem
-uvicorn src.api.main:app --reload --port 8000
+uvicorn neuramem_server.app:app --reload --port 8000
 
 # 访问文档
 # Swagger UI: http://localhost:8000/docs

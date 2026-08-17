@@ -111,7 +111,7 @@ python demo/app.py
 ### 1. 启动 API 服务
 使用 `uvicorn` 启动 FastAPI 服务：
 ```bash
-uvicorn src.api.main:app --reload --port 8000
+uvicorn neuramem_server.app:app --reload --port 8000
 ```
 启动后，您可以访问 **Swagger UI** 查看完整文档：[http://localhost:8000/docs](http://localhost:8000/docs)
 
