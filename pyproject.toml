@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuramem"
+version = "1.0.0a1"
+description = "General-purpose AI memory library: episodic CRUD, semantic consolidation, narrative grouping"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+    # adapter dependencies land with the adapter layer (implementation plan step 2):
+    # openai, pymilvus, numpy, langfuse
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+benchmark = [
+    "tqdm>=4.66",
+]
+test = [
+    "pytest>=8.0",
+    "hypothesis>=6.100",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# legacy packages (memory_system, api) stay out of the distribution until
+# they are deleted in implementation plan step 4
+include = ["neuramem*"]
+
+[tool.setuptools.package-data]
+neuramem = ["py.typed"]
