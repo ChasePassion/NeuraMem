@@ -21,7 +21,7 @@ NeuraMem 是一个基于神经科学和记忆模型的人工智能记忆系统�
 
 ## 评测结果 (Benchmark Results)
 
-NeuraMem 在 [LoCoMo](https://github.com/snap-stanford/locomo) 长对话记忆基准上的评测结果（排除 adversarial 类题目；工作流定义见 [RUN_RECORD.md](benchmark/locomo/RUN_RECORD.md) 第 6.1 节）：
+NeuraMem 在 [LoCoMo](https://github.com/snap-stanford/locomo) 长对话记忆基准上的评测结果（排除 adversarial 类题目；工作流定义见 [RUN_RECORD.md](neuramem_benchmark/RUN_RECORD.md) 第 6.1 节）：
 
 **W3 完整记忆闭环 + MiniMax-M3**（2026-08-17，1537 题）：
 
@@ -43,12 +43,12 @@ NeuraMem 在 [LoCoMo](https://github.com/snap-stanford/locomo) 长对话记忆�
 | 4-single-hop (单跳问答) | 841 | 480 | 57.07% |
 | **总体** | **1540** | **839** | **54.48%** |
 
-**评测口径**：同一份 LoCoMo 数据（10 个会话）。W3 = ingest（manage + 每 7 session consolidate）→ 混合检索（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答 → usage judge + 叙事分组（reconsolidation）→ LLM 判分（lenient 模板），全链路 MiniMax-M3，平均单题时延 19.11s；同时输出 KV cache（前缀缓存）命中率（记忆系统口径 19.06%）。W1→W3 总体提升 +14.68pp（工作流与模型同时变更，增益不可单独归因）。完整的环境配置、复现命令与 OpenViking 口径差异说明见 [benchmark/locomo/RUN_RECORD.md](benchmark/locomo/RUN_RECORD.md)。
+**评测口径**：同一份 LoCoMo 数据（10 个会话）。W3 = ingest（manage + 每 7 session consolidate）→ 混合检索（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答 → usage judge + 叙事分组（reconsolidation）→ LLM 判分（lenient 模板），全链路 MiniMax-M3，平均单题时延 19.11s；同时输出 KV cache（前缀缓存）命中率（记忆系统口径 19.06%）。W1→W3 总体提升 +14.68pp（工作流与模型同时变更，增益不可单独归因）。完整的环境配置、复现命令与 OpenViking 口径差异说明见 [neuramem_benchmark/RUN_RECORD.md](neuramem_benchmark/RUN_RECORD.md)。
 
 一键复现：
 
 ```bash
-python benchmark/locomo/run_benchmark.py --all-samples --threads 10 --ingest-parallel 4 --output result/locomo_neuramem_all_results.csv
+python -m neuramem_benchmark.run_benchmark --all-samples --threads 10 --ingest-parallel 4 --output result/locomo_neuramem_all_results.csv
 ```
 
 ## 功能实现 (Feature Implementation)

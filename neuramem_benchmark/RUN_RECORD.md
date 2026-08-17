@@ -202,3 +202,23 @@ W1 → W3 对比：multi-hop +15.05 / temporal +14.33 / open-domain +11.46 / sin
 - **Memory System Hit Rate = 19.06%**（token 加权）：answer 42.45% / usage_judge 39.34% / manage 9.17% / consolidate 1.57%；judge 48.38% 按口径排除。
 - 覆盖范围：eval 阶段覆盖全部 10 样本；ingest 阶段 usage JSON 仅保留 s6/s7/s8/s9 四份（s0–s5 的统计因 8-16 14:00 串行任务中断且当时为进程末尾统一落盘而丢失）。
 - 观察：eval 阶段命中率（~40%+）显著高于 ingest 阶段 manage（~9%）——answer 的 system prompt 与跨题重复检索的记忆内容形成稳定前缀，而 manage 每次上下文为「新对话 + 检索记忆」，前缀重复度低。
+
+## 9. 工具链迁移记录（2026-08-18，重构 Step 5）
+
+`benchmark/locomo/` 迁移至 `neuramem_benchmark/`（本目录），W 编号与对比规则原样延续。入口变化：
+
+| 旧入口 | 新入口 |
+|---|---|
+| `python benchmark/locomo/import_to_neuramem.py` | `python -m neuramem_benchmark.ingest` |
+| `python benchmark/locomo/run_eval.py` | `python -m neuramem_benchmark.runner` |
+| `python benchmark/locomo/stat_results.py` | `python -m neuramem_benchmark.report` |
+| `python benchmark/locomo/run_benchmark.py` | `python -m neuramem_benchmark.run_benchmark` |
+| `python benchmark/locomo/judge.py` / `rejudge.py` | `python -m neuramem_benchmark.judge` / `rejudge` |
+
+行为要点：
+- **ingest 完整性 manifest**（8.1 教训内建化）：每个样本 ingest 结束写 `result/ingest_manifest_{idx}.json`（含最终 Milvus 计数）；runner 默认拒绝无 manifest 的样本（`--no-manifest-check` 可越过）。
+- **eval 闭环走公共 API**：`search_async` → runner 自答 → `report_usage_async`（judge id 协议在库内），旧 `_memory_usage_judge` 伸手与 text 匹配删除。
+- **并发模型**：线程 → asyncio semaphore；usage 归属 contextvars scope（每题一个 scope，快照即增量），CSV 列名与 W3 完全一致。
+- **新增 `evidence_recall` 列**：OpenViking 指针解析规则（D{session}:{1-based 位置} → "speaker: text"）+ 子串命中，W4 校准。
+- **llm_config**：`MINIMAX_API_KEY` 存在时套用 W3 档位（api.minimaxi.com / MiniMax-M3 / thinking off / 10 次 × base 1s × cap 30s）；`MINIMAX_BASE_URL`/`MINIMAX_MODEL` 可覆盖（本地可用国内端点 api.minimax.chat）。W4 复现须与 W3 同 base_url。
+- 环境变量兼容 legacy 名（DEEPSEEK_* / SILICONFLOW_* / MILVUS_URL）。
