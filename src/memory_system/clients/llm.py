@@ -604,7 +604,14 @@ class LLMClient:
         default: Dict[str, Any] = None,
         call_label: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Call LLM and parse JSON response with safe fallback.
+        """Call LLM and parse JSON response with one corrective repair retry.
+
+        Parse failures are not silent (architecture_target.md #22): on an
+        unparseable first reply the client retries once with corrective
+        feedback, and ``success`` reflects the parse outcome — True only
+        when real JSON was parsed. Callers that must not proceed on the
+        fallback default (e.g. episodic CRUD decisions) check ``success``
+        and raise.
         
         Args:
             system_prompt: System prompt for the LLM
@@ -619,7 +626,9 @@ class LLMClient:
             - model: Model used for the request
             - usage: Structured usage of the call (LLMUsage.to_dict()), or
               None when the provider did not report usage
-            - success: Whether parsing was successful
+            - success: Whether the response parsed as JSON (after at most
+              one repair retry); False also on unexpected internal errors,
+              which add an "error" key
         """
         if default is None:
             default = {}
@@ -628,14 +637,38 @@ class LLMClient:
             response_text, usage = self._chat_with_usage(
                 system_prompt, user_message, call_label
             )
-            parsed_data = self._safe_parse_json(response_text, default)
+            parsed_data, parse_ok = self._parse_json_response(
+                response_text, default
+            )
+
+            if not parse_ok:
+                # One corrective retry: most parse failures are format
+                # sloppiness a repair round fixes; a silent fallback would
+                # lose the caller's intended operation set (#22).
+                logger.warning(
+                    "chat_json: response was not valid JSON; "
+                    "retrying once with corrective feedback"
+                )
+                retry_message = (
+                    f"{user_message}\n\n"
+                    "Your previous reply was not valid JSON:\n"
+                    f"{response_text[:500]}\n\n"
+                    "Reply again with ONLY a valid JSON object. "
+                    "No prose, no markdown fences, no extra text."
+                )
+                response_text, usage = self._chat_with_usage(
+                    system_prompt, retry_message, call_label
+                )
+                parsed_data, parse_ok = self._parse_json_response(
+                    response_text, default
+                )
             
             return {
                 "parsed_data": parsed_data,
                 "raw_response": response_text,
                 "model": self._model,
                 "usage": usage.to_dict() if usage is not None else None,
-                "success": True
+                "success": parse_ok
             }
         except LLMCallError:
             raise
@@ -650,11 +683,11 @@ class LLMClient:
                 "error": str(e)
             }
     
-    def _safe_parse_json(
+    def _parse_json_response(
         self,
         response: str,
-        default: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        default: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], bool]:
         """Parse JSON response with fallback to default.
         
         Args:
@@ -666,7 +699,7 @@ class LLMClient:
         """
         if not response:
             logger.error("Empty response from LLM")
-            return default
+            return default, False
         
         # Try to extract JSON from response (handle markdown code blocks and
         # reasoning-think blocks emitted by reasoning models such as MiniMax-M3)
@@ -696,10 +729,10 @@ class LLMClient:
             text = text[json_start:json_end + 1]
 
         try:
-            return json.loads(text)
+            return json.loads(text), True
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON response: {e}. Response: {response[:200]}")
-            return default
+            return default, False
 
     def _chat_with_retries(
         self,

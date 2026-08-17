@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 from ..clients.llm import LLMClient
+from ..exceptions import LLMParseError
 from ..prompts import EPISODIC_MEMORY_MANAGER
 
 from langfuse import observe, get_client
@@ -97,7 +98,18 @@ class EpisodicMemoryManager:
             default={"add": [], "update": [], "delete": []},
             call_label="manage",
         )
-        
+
+        if not llm_response.get("success", False):
+            # A parse failure must not masquerade as "LLM decided to do
+            # nothing" — that would silently drop this turn's CRUD decisions
+            # (architecture_target.md #22). The client already retried once
+            # with corrective feedback; surface the failure to the caller
+            # (server/demo log it; benchmark ingest isolates per turn).
+            raise LLMParseError(
+                model=llm_response.get("model", "unknown"),
+                raw_response=llm_response.get("raw_response", ""),
+            )
+
         # 提取解析后的数据
         response = llm_response["parsed_data"]
         

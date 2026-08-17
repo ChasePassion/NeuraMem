@@ -322,10 +322,11 @@ class TestLLMClient:
         }
 
     def test_chat_json_includes_usage_on_parse_failure(self):
-        """chat_json() still returns usage when JSON parsing fails.
+        """chat_json() reports success=False when parsing fails even after retry.
 
-        Note: a JSON parse miss is not an exception - success stays True and
-        parsed_data falls back to the default (original semantics).
+        The mock always returns unparseable text, so the corrective retry
+        (second create call) also fails. usage reflects the last attempt and
+        parsed_data falls back to the default (architecture_target.md #22).
         """
         usage = self._make_usage_mock(prompt_tokens=100, cached_tokens=0)
         response = self._make_response_mock(usage)
@@ -337,10 +338,38 @@ class TestLLMClient:
             client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
             result = client.chat_json("system prompt", "user message", default={"d": 1})
 
-        assert result["success"] is True
+        assert result["success"] is False
         assert result["parsed_data"] == {"d": 1}
         assert result["usage"] is not None
         assert result["usage"]["input_tokens"] == 100
+        create = mock_openai.return_value.chat.completions.create
+        assert create.call_count == 2  # initial call + one repair retry
+
+    def test_chat_json_repairs_invalid_json_first_attempt(self):
+        """chat_json() retries once with corrective feedback and succeeds."""
+        usage = self._make_usage_mock(prompt_tokens=100, cached_tokens=0)
+        bad_response = self._make_response_mock(usage)
+        bad_response.choices[0].message.content = "Sure! Here is my answer..."
+        good_response = self._make_response_mock(usage)
+        good_response.choices[0].message.content = '{"key": "fixed"}'
+        mock_openai = Mock()
+        mock_openai.return_value.chat.completions.create.side_effect = [
+            bad_response,
+            good_response,
+        ]
+
+        with patch("src.memory_system.clients.llm.OpenAI", mock_openai):
+            client = LLMClient(api_key="test_key", base_url="https://api.test.com", model="test-model")
+            result = client.chat_json("system prompt", "user message")
+
+        assert result["success"] is True
+        assert result["parsed_data"] == {"key": "fixed"}
+        assert result["raw_response"] == '{"key": "fixed"}'
+        create = mock_openai.return_value.chat.completions.create
+        assert create.call_count == 2
+        # the retry message carries the corrective feedback
+        retry_message = create.call_args_list[1].kwargs["messages"][1]["content"]
+        assert "not valid JSON" in retry_message
 
     def test_stream_records_usage_from_final_chunk(self):
         """chat_stream() records usage carried by the final stream chunk once."""

@@ -114,6 +114,7 @@ def import_sample(
         selected_keys = selected_keys[:max_sessions]
 
     total_added = 0
+    failed_turns = 0
     processed_sessions = 0
     pbar = tqdm(selected_keys, desc=f"Ingesting {sample_name}")
     for s_key in pbar:
@@ -138,12 +139,23 @@ def import_sample(
                 assistant_text = "(No reply)"
                 i += 1
 
-            added_ids = memory.manage(
-                user_text=user_text,
-                assistant_text=assistant_text,
-                user_id=user_id,
-                chat_id=s_key,
-            )
+            # Per-turn error isolation (architecture_target.md #22): a turn
+            # whose CRUD decisions fail to parse must not kill the whole
+            # sample replay — log it, count it, keep ingesting.
+            try:
+                added_ids = memory.manage(
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                    user_id=user_id,
+                    chat_id=s_key,
+                )
+            except Exception as e:
+                failed_turns += 1
+                logger.warning(
+                    f"manage failed for turn in {sample_name}/{s_key}, "
+                    f"skipping turn ({failed_turns} failed so far): {e}"
+                )
+                continue
             total_added += len(added_ids)
             pbar.set_postfix({"added_memories": total_added})
 
@@ -154,7 +166,10 @@ def import_sample(
         if processed_sessions % CONSOLIDATE_EVERY_SESSIONS == 0:
             _run_consolidation(memory, user_id, sample_name)
 
-    logger.info(f"Successfully ingested {sample_name}: {total_added} episodic memories stored.")
+    logger.info(
+        f"Successfully ingested {sample_name}: {total_added} episodic memories "
+        f"stored ({failed_turns} turns skipped on manage failure)."
+    )
     return total_added
 
 
