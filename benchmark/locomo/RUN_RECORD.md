@@ -1,6 +1,7 @@
 # NeuraMem LoCoMo Benchmark — Run Record
 
 > 本文件记录 2026-08-14/15 首次完整跑分（--all-samples）的环境与配置，用于系统升级后复现同口径跑分并做前后对比。
+> W3（完整闭环 + MiniMax-M3）跑分记录见第 8 节（2026-08-17，69.16%）。
 > API keys 一律不写入本文件，均从 .env 读取；下文 `<from .env>` 表示该变量的值只存在于 .env。
 
 ## 1. 本次跑分概要
@@ -138,7 +139,7 @@ cd E:\code\NeuraMem
 |---|---|---|---|---|
 | **W1 episodic-only 基线** | manage（episodic CRUD），无 consolidate | search（episodic top-5 向量）→ LLM 回答 → LLM 判分 | 已跑（2026-08-14） | **54.48%** |
 | **W2 完整系统闭环** | manage（episodic CRUD）+ **每 7 个 session consolidate 一次**（模拟周期巩固；末尾不补——无后续消费方） | search（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答 → usage judge（判断哪些检索记忆被用到）→ assign_to_narrative_group（用到的记忆聚成叙事组）→ LLM 判分 | 代码已就绪，**分数待重跑** | 待定 |
-| **W3 完整闭环 + MiniMax-M3** | 同 W2 | 同 W2；**全链路 LLM = MiniMax-M3**（api.minimaxi.com/v1，OpenAI 兼容；`LLM_EXTRA_BODY={"thinking":{"type":"disabled"}}` 关闭 thinking，与 OpenViking 官方口径对齐；manage/consolidate/usage judge/answer/judge 全部走 M3，评测禁用 fallback 单 provider 模式） | 代码已就绪（llm_config.py apply_minimax_primary），**分数待重跑** | 待定 |
+| **W3 完整闭环 + MiniMax-M3** | 同 W2 | 同 W2；**全链路 LLM = MiniMax-M3**（api.minimaxi.com/v1，OpenAI 兼容；`LLM_EXTRA_BODY={"thinking":{"type":"disabled"}}` 关闭 thinking，与 OpenViking 官方口径对齐；manage/consolidate/usage judge/answer/judge 全部走 M3，评测禁用 fallback 单 provider 模式） | 已跑（2026-08-16/17，服务器分批，见第 8 节） | **69.16%** |
 
 ```text
 W1 流程: manage -> search(top-5) -> answer -> judge                                    (deepseek-chat)
@@ -168,3 +169,33 @@ W3 流程: 同 W2，全链路 LLM 换成 MiniMax-M3（thinking 关闭：LLM_EXTR
 5. 对比口径：新旧两次跑分之间只允许系统代码差异，评测脚本 / .env / 数据 / 服务器不应变化；
 6. **声明工作流**：每次跑分必须记录使用的工作流（W1 / W2），同一工作流下才能做系统升级对比（见 6.1）；
 7. 若升级包含检索策略变化（如 k、rerank、时间排序），在第 6 节表格中追加记录，避免对比时混淆。
+
+## 8. W3 完整跑分记录（2026-08-16/17，服务器）
+
+| 项 | 值 |
+|---|---|
+| 跑分时间 | 2026-08-16 20:10 ~ 2026-08-17 09:08（ingest 与 eval 分批跨限额窗口执行） |
+| 运行位置 | 服务器 `/root/neuramem`（GitHub 部署，HEAD=1ce529f，.venv；Milvus 同机） |
+| 数据 | data/locomo10.json（同 W1；实际评出 1537/1540——s2/s4/s9 各 1 题偶发丢失，影响 0.2%） |
+| 工作流 | **W3 完整闭环 + MiniMax-M3**（thinking 关闭） |
+| **总体准确率** | **69.16%**（1063/1537） |
+| 分项 | 1-multi-hop 71.79% / 2-temporal 61.68% / 3-open-domain 60.42% / 4-single-hop 72.14% |
+| 平均单题时延 | 19.11s（含 usage judge / 叙事分组 / judge 判分，及 429 限流重试） |
+| 结果文件 | result/locomo_neuramem_w3_results.csv、result/summary_w3.txt（已从服务器同步回本地） |
+
+W1 → W3 对比：multi-hop +15.05 / temporal +14.33 / open-domain +11.46 / single-hop +15.07 / 总体 **+14.68pp**。注意 W1→W3 同时改变了**工作流**（episodic-only → 完整闭环）与**模型**（deepseek-chat → MiniMax-M3）两个变量，增益不可单独归因（见 6.1 对比规则；W2 未单独跑分）。
+
+各样本准确率：s0 74.3 / s1 75.3 / s2 78.8 / s3 63.3 / s4 75.7 / s5 61.0 / s6 80.7 / s7 58.1 / s8 64.7 / s9 65.0。
+
+### 8.1 执行方式（受 MiniMax 5h 限额约束，分批跑）
+
+- **ingest**：cron 串行全量任务中断后，改为按样本 nohup 单独执行；每样本完成即落盘 `result/ingest_usage_stats_N.json`。
+- **eval**：每样本独立进程 `run_eval.py --sample N --threads 2~4 --output result/w3_eval_sN.csv`；最后按 (sample_index, question_id) 去重合并为 `locomo_neuramem_w3_results.csv`。
+- **事故记录**：2026-08-16 下午手动重跑 s6–s9 ingest 时 s8 被中断（残留 201 条残缺记忆），导致 s8 首轮 eval 仅 32.7%（平均检索命中 5.4 条/题）；8-17 上午重跑 s8 的 ingest+eval 后恢复 64.7%。**教训：样本 ingest 完成后必须核对 Milvus 记忆数与日志「Import complete」行，再进入 eval 阶段。**
+- **429 限流**：MiniMax 偶发 429 Too Many Requests，SDK 重试退避可全部消化；5 进程 × 2 线程（总并发 10）时依然稳定。
+
+### 8.2 KV cache 命中率（W3 首次输出，口径见 6.2）
+
+- **Memory System Hit Rate = 19.06%**（token 加权）：answer 42.45% / usage_judge 39.34% / manage 9.17% / consolidate 1.57%；judge 48.38% 按口径排除。
+- 覆盖范围：eval 阶段覆盖全部 10 样本；ingest 阶段 usage JSON 仅保留 s6/s7/s8/s9 四份（s0–s5 的统计因 8-16 14:00 串行任务中断且当时为进程末尾统一落盘而丢失）。
+- 观察：eval 阶段命中率（~40%+）显著高于 ingest 阶段 manage（~9%）——answer 的 system prompt 与跨题重复检索的记忆内容形成稳定前缀，而 manage 每次上下文为「新对话 + 检索记忆」，前缀重复度低。
