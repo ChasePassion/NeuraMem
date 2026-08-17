@@ -12,8 +12,9 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",
-    # adapter dependencies land with the adapter layer (implementation plan step 2):
-    # openai, pymilvus, numpy, langfuse
+    "openai>=1.40",
+    "pymilvus>=2.4",
+    "langfuse>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -40,3 +41,6 @@ include = ["neuramem*"]
 
 [tool.setuptools.package-data]
 neuramem = ["py.typed"]
+
+[tool.pyrefly]
+python-interpreter-path = "E:/Anaconda/envs/Langchain_learn/python.exe"
