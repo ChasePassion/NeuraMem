@@ -5,7 +5,7 @@ these instead of raw dicts; the public API returns these; the server layer
 serializes these.
 """
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -176,5 +176,5 @@ class GroupInfo(BaseModel):
 class SpanStatus(BaseModel):
     """Terminal status of a telemetry span."""
 
-    status: str = "ok"  # "ok" | "error"
+    status: Literal["ok", "error"] = "ok"
     error_message: Optional[str] = None
