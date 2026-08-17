@@ -115,3 +115,5 @@ Step 1 (core)  →  Step 2 (adapters)  →  Step 3 (pipeline)  →  Step 4 (serv
 5. **存量测试的处置**：13 处失败是存量（properties 部分依赖真 Milvus / v1 字段残留）。原则：依赖 InMemoryStore 能复活的按新端口重写（不硬移植），test_stream.py 直接删。测试债在本重构内清偿，不带入新包。
 6. **W3 复现窗口在 Step 4 关闭**：删旧包前旧路径随时可复现 W3（安全网）；删除后只能靠 Step 〇 的 tag。若 W4 出现大滑坡需要 A/B 定位，用 tag checkout 旧代码跑对照。
 7. **服务器与本地同步**：沿用 GitHub 部署惯例（服务器 git pull），每步合并后同步；Milvus 服务器上 W4 前建议清掉 W3 的 10 个样本数据与 groups 集合（reset 重导），避免新旧 schema 数据混存。
+8. **retired 标记的存储载体在 Step 1 尚无落点**（2026-08-17 Step 1 自查发现）：MemoryFilter 有 `retired` 过滤字段，但 MemoryRecord 没有 retired 字段——#20 冲突淘汰打标时无处写、检索过滤无处读。Step 2 实现存储时补：MemoryRecord 加 `retired: bool = False`（映射 Milvus 动态字段）或端口加 `retire(ids)` 方法，二选一在 Step 2 定。
+9. **新配置的 .env 发现机制比 legacy 窄**：legacy `load_dotenv()` 从代码位置向上搜索目录树；pydantic-settings 的 `env_file=".env"` 只看进程 CWD。从非仓库根目录启动时 .env 不生效（服务器惯例 /root/neuramem 下启动不受影响）。另注意：.env 里 W3 时代的 `LLM_MAX_RETRIES=10` / `LLM_BASE_DELAY=1.0` 会被新 LLMConfig 同名前缀隐式继承——W4 配置清单要显式声明这几个值，别误以为在跑 6.3 的默认档位。
