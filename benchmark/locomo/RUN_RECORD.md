@@ -133,26 +133,29 @@ cd E:\code\NeuraMem
 
 ### 6.1 记忆工作流变量（Memory Workflow as a Benchmark Variable）
 
-记忆系统在评测中的工作形态是**核心变量之一**：评测脚本决定系统哪些能力被激活，因此不同工作流跑出的分数**不可直接对比**。**LLM 模型也是变量**（不同模型的推理能力直接影响分数）。目前定义三种工作流：
+记忆系统在评测中的工作形态是**核心变量之一**：评测脚本决定系统哪些能力被激活，因此不同工作流跑出的分数**不可直接对比**。**LLM 模型也是变量**（不同模型的推理能力直接影响分数）。目前定义四种工作流：
 
 | 工作流 | 摄取阶段（Phase 1） | 评测阶段（Phase 2，每题） | 状态 | 分数 |
 |---|---|---|---|---|
 | **W1 episodic-only 基线** | manage（episodic CRUD），无 consolidate | search（episodic top-5 向量）→ LLM 回答 → LLM 判分 | 已跑（2026-08-14） | **54.48%** |
 | **W2 完整系统闭环** | manage（episodic CRUD）+ **每 7 个 session consolidate 一次**（模拟周期巩固；末尾不补——无后续消费方） | search（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答 → usage judge（判断哪些检索记忆被用到）→ assign_to_narrative_group（用到的记忆聚成叙事组）→ LLM 判分 | 代码已就绪，**分数待重跑** | 待定 |
 | **W3 完整闭环 + MiniMax-M3** | 同 W2 | 同 W2；**全链路 LLM = MiniMax-M3**（api.minimaxi.com/v1，OpenAI 兼容；`LLM_EXTRA_BODY={"thinking":{"type":"disabled"}}` 关闭 thinking，与 OpenViking 官方口径对齐；manage/consolidate/usage judge/answer/judge 全部走 M3，评测禁用 fallback 单 provider 模式） | 已跑（2026-08-16/17，服务器分批，见第 8 节） | **69.16%** |
+| **W4 重构后系统** | 同 W3 + **冲突淘汰**（consolidate 增量合并，矛盾旧语义记忆打 retired 标记并永久过滤，物理删除仅手动 reset） | 同 W3：**模型、答题/判分 prompt、评测口径全部不变**；差异仅在实现——闭环经两段式公共 API（search_async + report_usage_async）接入、usage judge 协议 text→id、闭环保真修复（见 docs/architecture_target.md #14/#20/#21/#22 与第十一章） | 待跑（重构落地后） | 待定 |
 
 ```text
 W1 流程: manage -> search(top-5) -> answer -> judge                                    (deepseek-chat)
 W2 流程: manage -> consolidate -> search(top-5 + 组扩展 + semantic) -> answer -> usage judge -> 叙事分组 -> judge   (deepseek-chat)
 W3 流程: 同 W2，全链路 LLM 换成 MiniMax-M3（thinking 关闭：LLM_EXTRA_BODY={"thinking":{"type":"disabled"}}）
+W4 流程: 同 W3 + consolidate 冲突淘汰（retired 标记 + 永久过滤）；实现为重构后代码（两段式闭环、judge id 协议、闭环保真修复）
 ```
 
 与 demo/app.py 的对应关系：consolidate = run_consolidation 按钮；usage judge + 叙事分组 = _process_memory 的 reconsolidation 闭环；search 叙事组扩展 = 混合检索的叙事链扩展。
 
 **对比规则**：
 - 系统代码升级对比（如升级前 vs 升级后）：必须使用**同一工作流**，否则分数差异无法归因；
+- **W4 vs W3 可直接对比**：模型（MiniMax-M3 thinking off）、答题/判分 prompt、评测口径全部不变，差值归因于重构（闭环保真修复、judge id 协议）与新增冲突淘汰机制——这是重构效果的主对比组；
 - W2 vs W1 的分数差距 = 完整系统相对子集的增益，可作为单独结论报告，但不得与系统升级混为一谈；
-- 报告任何分数时都必须声明工作流（如 54.48%@W1）。
+- 报告任何分数时都必须声明工作流（如 54.48%@W1 / 69.16%@W3）。
 
 验证记录（冒烟，2026-08-15）：
 - 摄取：sample_1 摄取 8 sessions，第 7 个 session 后 consolidate 一次（48 episodic → +4 semantic），末尾无 consolidate；
