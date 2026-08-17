@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 import pytest
 
-from neuramem.core.exceptions import LLMCallError
+from neuramem.core.exceptions import LLMCallError, MilvusConnectionError
 from neuramem.core.models import MemoryRecord, SearchResult
 from neuramem_server import app as app_module
 from neuramem_server.app import app
@@ -234,3 +234,13 @@ class TestErrorMapping:
         body = response.json()
         assert body["error_code"] == "LLM_SERVICE_ERROR"
         assert body["model"] == "model-x"
+
+    def test_milvus_connection_error_maps_to_503(self, client):
+        client.memory.fail_with = MilvusConnectionError(
+            "http://milvus:19530", RuntimeError("down")
+        )
+        response = client.post(
+            "/v1/memories/search", json={"user_id": "u1", "query": "q"}
+        )
+        assert response.status_code == 503
+        assert response.json()["error_code"] == "DB_CONNECTION_ERROR"

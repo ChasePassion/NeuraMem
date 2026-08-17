@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
 
+# fire-and-forget tasks need a strong reference: asyncio keeps only weak
+# refs, so unreferenced tasks can be garbage-collected mid-flight
+_background_tasks: set[asyncio.Task] = set()
+
 # legacy context shape kept: memory blocks truncated to 5/5 explicitly
 # (render defaults to no truncation — the retrieval config owns quantity)
 MAX_EPISODIC_IN_PROMPT = 5
@@ -98,9 +102,11 @@ async def chat_stream(
             )
 
             # Phase 2b: close the loop + manage, fire-and-forget
-            asyncio.create_task(
+            task = asyncio.create_task(
                 _post_answer_tasks(memory, request, result, accumulated)
             )
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
         except Exception as e:
             logger.error("Chat stream error for user %s: %s", request.user_id, e)
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"

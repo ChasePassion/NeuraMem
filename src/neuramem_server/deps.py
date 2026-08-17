@@ -9,8 +9,6 @@ legacy chat router reached into memory._llm_client).
 import logging
 from functools import lru_cache
 
-from fastapi import Depends
-
 from neuramem.config import MemoryConfig
 from neuramem.llm.openai_adapter import OpenAILLM
 from neuramem.memory import Memory
@@ -31,10 +29,12 @@ def get_memory_system() -> Memory:
     return Memory(config)
 
 
+@lru_cache
 def get_chat_llm() -> LLM:
-    """Server-owned LLM used for answer generation (same provider config)."""
+    """Server-owned LLM used for answer generation (same provider config).
+
+    Cached: one AsyncOpenAI connection pool and one UsageStats aggregate
+    for the process — per-request instances would leak pools and lose all
+    usage visibility.
+    """
     return OpenAILLM(get_config().llm)
-
-
-def require_memory(memory: Memory = Depends(get_memory_system)) -> Memory:
-    return memory

@@ -38,6 +38,8 @@ class MemoryDemoApp:
         self.chat_history: list[dict] = []
         self.memory: Memory | None = None
         self.answer_llm: OpenAILLM | None = None
+        # strong refs for fire-and-forget tasks (asyncio holds weak refs)
+        self._background_tasks: set[asyncio.Task] = set()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -134,7 +136,9 @@ class MemoryDemoApp:
             self.chat_history.append({"role": "assistant", "content": accumulated})
 
         # closed loop + manage, fire and forget
-        asyncio.create_task(self._post_turn(message, accumulated, result))
+        task = asyncio.create_task(self._post_turn(message, accumulated, result))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _post_turn(self, message: str, answer: str, result):
         try:
