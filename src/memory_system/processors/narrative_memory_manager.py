@@ -227,8 +227,16 @@ class NarrativeMemoryManager:
             
             # 步骤2：如有必要，更新或删除组
             if group_id != -1:
+                # Exclude the memory being deleted: this cleanup runs BEFORE
+                # the store delete, so the dying row still matches the filter.
+                # Including it would pollute the recomputed centroid, inflate
+                # the group size by one, and keep the empty-group deletion
+                # branch below unreachable (orphan groups accumulate).
                 members_res = self._store.query(
-                    filter_expr=f"group_id == {group_id} and user_id == '{user_id}'",
+                    filter_expr=(
+                        f"group_id == {group_id} and user_id == '{user_id}' "
+                        f"and id != {memory_id}"
+                    ),
                     output_fields=["id", "vector"],
                 )
                 n = len(members_res)
