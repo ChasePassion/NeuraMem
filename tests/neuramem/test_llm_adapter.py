@@ -71,10 +71,12 @@ class _AsyncIter:
         return item
 
 
-def _chunk(content=None, usage=None, choice_usage=None):
+def _chunk(content=None, usage=None, choice_usage=None, choices=None):
     chunk = Mock()
     chunk.usage = usage
-    if content is None and choice_usage is None:
+    if choices is not None:
+        chunk.choices = choices
+    elif content is None and choice_usage is None:
         chunk.choices = []
     else:
         choice = Mock()
@@ -250,6 +252,38 @@ class TestStream:
 
         assert collected == ["x"]
         assert llm.usage_stats.snapshot()["calls"] == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_chunk_with_no_choices_is_tolerated(self):
+        """Mid-stream heartbeat chunks can arrive with choices=[]."""
+        chunks = [_chunk(content="hi"), _chunk(), _chunk(content="bye")]
+        create = AsyncMock(return_value=_AsyncIter(chunks))
+        with _patch_client(create)[0]:
+            llm = OpenAILLM(_config())
+            collected = [p async for p in llm.stream("sys", "user")]
+
+        assert collected == ["hi", "bye"]
+        # heartbeat chunk did not crash and did not record phantom usage
+        assert llm.usage_stats.snapshot()["calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_stream_multi_choice_concatenates(self):
+        """n>1 streams must not silently drop the second choice."""
+        def make_choice(content):
+            c = Mock()
+            c.delta = Mock(content=content)
+            c.usage = None
+            return c
+        chunks = [
+            _chunk(choices=[make_choice("a"), make_choice("b")]),
+            _chunk(choices=[make_choice("1"), make_choice("2")]),
+        ]
+        create = AsyncMock(return_value=_AsyncIter(chunks))
+        with _patch_client(create)[0]:
+            llm = OpenAILLM(_config())
+            collected = [p async for p in llm.stream("sys", "user")]
+
+        assert collected == ["ab", "12"]
 
 
 class TestUsageStatsScopes:

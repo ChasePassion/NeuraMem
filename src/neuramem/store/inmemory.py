@@ -204,8 +204,14 @@ class InMemoryStore:
     async def get_group_members(
         self, group_id: int, user_id: str, include_vectors: bool = False
     ) -> list[MemoryRecord]:
-        flt = MemoryFilter(user_id=user_id, group_id=group_id)
-        return await self.query(flt, limit=100_000, include_vectors=include_vectors)
+        members = [
+            r for r in self._memories.values()
+            if r.user_id == user_id and r.group_id == group_id
+        ]
+        members.sort(key=lambda r: r.id)
+        if not include_vectors:
+            members = [r.model_copy(update={"vector": None}) for r in members]
+        return members
 
     async def update_memory_group_id(
         self, memory_id: int, group_id: int, user_id: str

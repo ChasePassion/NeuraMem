@@ -39,6 +39,15 @@ class OpenAIEmbedder:
         if not texts:
             return []
 
+        # Providers reject blank inputs differently; filter them out and
+        # splice the placeholder back at the matching positions.
+        placeholders: list[list[float]] = [
+            [] for text in texts if not text or not text.strip()
+        ]
+        non_empty = [text for text in texts if text and text.strip()]
+        if not non_empty:
+            return placeholders
+
         executor = RetryExecutor(
             max_retries=self._config.max_retries,
             base_delay=self._config.base_delay,
@@ -49,12 +58,25 @@ class OpenAIEmbedder:
 
         async def do_embed():
             response = await self._client.embeddings.create(
-                model=self._config.model, input=texts
+                model=self._config.model, input=non_empty
             )
             return [item.embedding for item in response.data]
 
         try:
-            return await executor.execute_async(do_embed)
+            embeddings = await executor.execute_async(do_embed)
         except LLMCallError:
-            logger.error("embedding call failed after retries for %d texts", len(texts))
+            logger.error(
+                "embedding call failed after retries for %d non-empty texts",
+                len(non_empty),
+            )
             raise
+
+        # rebuild result with empty-text placeholders in their original slots
+        result: list[list[float]] = []
+        emb_iter = iter(embeddings)
+        for text in texts:
+            if text and text.strip():
+                result.append(next(emb_iter))
+            else:
+                result.append([])
+        return result
