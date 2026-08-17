@@ -99,8 +99,16 @@ class MilvusStore:
         schema = CollectionSchema(fields, enable_dynamic_field=True)
         index_params = self._client.prepare_index_params()
         index_params.add_index(field_name="vector", index_type="AUTOINDEX", metric_type="COSINE")
-        self._client.create_collection(name, schema=schema, index_params=index_params)
-        logger.info("Created memories collection '%s' (dim=%d)", name, dim)
+        # Strong consistency: default Session/Bounded levels leave freshly
+        # written rows invisible to single-clause queries for a short window
+        # (observed on this server), which breaks read-after-write flows
+        # (upsert -> query, insert -> count). Query latency is irrelevant
+        # next to the LLM calls that dominate every flow.
+        self._client.create_collection(
+            name, schema=schema, index_params=index_params, consistency_level="Strong"
+        )
+        self._client.load_collection(name)
+        logger.info("Created memories collection '%s' (dim=%d, Strong)", name, dim)
 
     def _ensure_groups_collection_sync(self, dim: int) -> str:
         name = self._config.groups_collection_name
@@ -118,8 +126,11 @@ class MilvusStore:
         index_params.add_index(
             field_name="centroid_vector", index_type="AUTOINDEX", metric_type="IP"
         )
-        self._client.create_collection(name, schema=schema, index_params=index_params)
-        logger.info("Created groups collection '%s' (dim=%d)", name, dim)
+        self._client.create_collection(
+            name, schema=schema, index_params=index_params, consistency_level="Strong"
+        )
+        self._client.load_collection(name)
+        logger.info("Created groups collection '%s' (dim=%d, Strong)", name, dim)
         return name
 
     # -- entity mapping ---------------------------------------------------------
@@ -284,11 +295,10 @@ class MilvusStore:
         return len(rows)
 
     async def count(self, flt: Optional[MemoryFilter] = None) -> int:
-        if flt is None or flt.is_empty():
-            stats = await self._run(
-                self._client.get_collection_stats, collection_name=self._config.collection_name
-            )
-            return int(stats.get("row_count", 0))
+        # Always query-based: get_collection_stats row_count lags unflushed
+        # growing segments (observed returning 0 right after insert), and the
+        # benchmark's ingest-completeness check needs accurate counts. Capped
+        # at QUERY_PAGE_LIMIT rows.
         rows = await self._run(
             self._client.query,
             collection_name=self._config.collection_name,
