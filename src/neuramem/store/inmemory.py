@@ -215,7 +215,7 @@ class InMemoryStore:
         self, group_id: int, user_id: str, include_vectors: bool = False
     ) -> list[MemoryRecord]:
         flt = MemoryFilter(user_id=user_id, group_id=group_id)
-        return await self.query(flt, limit=100_000, include_vectors=include_vectors)
+        return await self.query(flt, limit=16_384, include_vectors=include_vectors)
 
     async def update_memory_group_id(
         self, memory_id: int, group_id: int, user_id: str

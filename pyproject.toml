@@ -15,6 +15,7 @@ dependencies = [
     "openai>=1.40",
     "pymilvus>=2.4",
     "langfuse>=3.0",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
