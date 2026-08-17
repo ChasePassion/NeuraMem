@@ -99,16 +99,7 @@ class MilvusStore:
         schema = CollectionSchema(fields, enable_dynamic_field=True)
         index_params = self._client.prepare_index_params()
         index_params.add_index(field_name="vector", index_type="AUTOINDEX", metric_type="COSINE")
-        # Strong consistency: ingest-then-read paths in the library must see
-        # the write immediately (manage -> search, retire -> query, upsert ->
-        # group assignment). The default level shows a growth-segment lag
-        # that breaks these flows without warning. The latency cost is
-        # negligible vs the seconds-scale LLM calls in the same path.
-        self._client.create_collection(
-            name, schema=schema, index_params=index_params,
-            consistency_level="Strong",
-        )
-        self._client.load_collection(name)
+        self._client.create_collection(name, schema=schema, index_params=index_params)
         logger.info("Created memories collection '%s' (dim=%d)", name, dim)
 
     def _ensure_groups_collection_sync(self, dim: int) -> str:
@@ -127,11 +118,7 @@ class MilvusStore:
         index_params.add_index(
             field_name="centroid_vector", index_type="AUTOINDEX", metric_type="IP"
         )
-        self._client.create_collection(
-            name, schema=schema, index_params=index_params,
-            consistency_level="Strong",
-        )
-        self._client.load_collection(name)
+        self._client.create_collection(name, schema=schema, index_params=index_params)
         logger.info("Created groups collection '%s' (dim=%d)", name, dim)
         return name
 
@@ -425,19 +412,14 @@ class MilvusStore:
     async def update_memory_group_id(
         self, memory_id: int, group_id: int, user_id: str
     ) -> bool:
-        # Direct id equality (not id_in): more reliable on the just-written
-        # segment. Caller has only the id+user_id; we fetch the row once to
-        # backfill the vector the upsert requires (#17 partial-update path).
-        rows = await self._run(
-            self._client.query,
-            collection_name=self._config.collection_name,
-            filter=f"id == {memory_id} and user_id == {escape_string(user_id)}",
-            output_fields=["*"],
+        records = await self.query(
+            MemoryFilter(user_id=user_id, id_in=[memory_id]),
             limit=1,
+            include_vectors=True,
         )
-        if not rows:
+        if not records:
             return False
-        record = self._entity_to_record(dict(rows[0]))
+        record = records[0]
         record.group_id = group_id
         await self.upsert([record])
         return True

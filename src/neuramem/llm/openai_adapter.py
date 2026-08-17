@@ -472,52 +472,21 @@ class OpenAILLM:
             response = await self._client.chat.completions.create(**kwargs)
             async for chunk in response:
                 self._record_stream_usage(chunk, call_label)
-                text = _extract_chunk_text(chunk)
-                if text:
-                    yield text
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
 
         async for item in executor.stream_async(do_stream):
             yield item
 
     def _record_stream_usage(self, chunk: Any, call_label: Optional[str]) -> None:
-        usage_obj = _extract_chunk_usage(chunk)
+        usage_obj = getattr(chunk, "usage", None)
+        if usage_obj is None and getattr(chunk, "choices", None):
+            choice_usage = getattr(chunk.choices[0], "usage", None)
+            if choice_usage is not None:
+                usage_obj = choice_usage
         usage = parse_usage(usage_obj)
         if usage is not None:
             self._record(usage, call_label)
-
-
-def _extract_chunk_text(chunk: Any) -> Optional[str]:
-    """Concatenate text content across all choices on a stream chunk.
-
-    Multi-choice streams (n>1) would silently truncate to the first choice
-    under the previous `choices[0].delta.content` read. Skip empty deltas
-    defensively because providers may emit a chunk with choices=[].
-    """
-    choices = getattr(chunk, "choices", None) or []
-    parts: list[str] = []
-    for choice in choices:
-        delta = getattr(choice, "delta", None)
-        content = getattr(delta, "content", None)
-        if content:
-            parts.append(content)
-    return "".join(parts) if parts else None
-
-
-def _extract_chunk_usage(chunk: Any) -> Any:
-    """Read the final-chunk usage object, with Moonshot-style fallback.
-
-    OpenAI puts it on chunk.usage; some providers (e.g. Moonshot) put it
-    on choice.usage instead. Both shapes are accepted; the first match
-    wins so partial overlap is deterministic.
-    """
-    usage_obj = getattr(chunk, "usage", None)
-    if usage_obj is not None:
-        return usage_obj
-    for choice in getattr(chunk, "choices", None) or ():
-        choice_usage = getattr(choice, "usage", None)
-        if choice_usage is not None:
-            return choice_usage
-    return None
 
 
 def _parse_json_payload(response: str, default: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:

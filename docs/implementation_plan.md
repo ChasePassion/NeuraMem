@@ -117,7 +117,3 @@ Step 1 (core)  →  Step 2 (adapters)  →  Step 3 (pipeline)  →  Step 4 (serv
 7. **服务器与本地同步**：沿用 GitHub 部署惯例（服务器 git pull），每步合并后同步；Milvus 服务器上 W4 前建议清掉 W3 的 10 个样本数据与 groups 集合（reset 重导），避免新旧 schema 数据混存。
 8. ~~retired 标记的存储载体无落点~~（**已修复 2026-08-17**）：MemoryRecord 增加 `retired: bool = False`——映射 Milvus 动态字段、随 upsert 携带、与 MemoryFilter.retired 读写同源；Step 2 适配器按此实现 #20。
 9. ~~.env 发现机制窄 + 档位隐式继承~~（**已修复 2026-08-17**）：MemoryConfig() 构造时从 CWD **向上**搜索最近 .env（复刻 legacy 容忍度，子目录跑脚本不受影响）；构造即打印生效的非默认配置——被 .env 继承的 W3 档位（LLM_MAX_RETRIES=10 等）从此可见。继承行为保留（W4 可直接复用同一份 .env），但 W4 配置清单仍应显式声明关键档位。
-10. **embedder 启动时 dim 探测尚未实现**（2026-08-17 Step 2 自查发现）：配置文件是 dim 的单一来源，但 provider 真正返回的维度仍可能在模型切换后漂移——架构文档 #9 承诺了“config 显式值 + 启动探测（fail-fast）”，当前只到前者。Step 3 Memory 构造时补：embed 一条 sample，与 config.dim 对比，不一致即 raise。
-11. **detect_compat 首版覆盖过窄**（Step 2 自查）：当前只识别 deepseek 指纹，其他服务商（含 MiniMax、Moonshot、z.ai、阿里百炼等）走默认分支——能跑但不保证 `max_tokens` 字段命名、strict mode、cache control 等差异正确。Step 3 起按真实接入扩展 ProviderCompat 字段；服务商标识符以 pi-mono detectCompat 为基准。
-12. **Langfuse adapter 缺显式 flush**（Step 2 自查）：adapter 在 shutdown 时未上报的 spans 会丢失。Step 4 server lifespan 切换时显式调用 LangfuseTelemetry.flush() / equivalent，与 FAST API lifespan 自然集成。
-13. **InMemoryStore 的 id 不复用 deleted id**（Step 2 自查行为记录）：`_next_id` 单调递增不复用，与 Milvus auto_id 一致——是有意行为，但与一般 CRUD 习惯不同，应在 docstring 与代码注释明示（已写）。

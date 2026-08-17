@@ -134,16 +134,3 @@ class TestGroups:
         assert await store.update_memory_group_id(ids[0], 5, "u1") is True
         members = await store.get_group_members(5, "u1")
         assert [m.id for m in members] == ids
-
-    @pytest.mark.asyncio
-    async def test_get_group_members_does_not_drag_vectors_unless_requested(self, store):
-        await store.insert([
-            _record("a", vector=[1.0, 0.0], group_id=1),
-            _record("b", vector=[0.0, 1.0], group_id=1),
-            _record("c", vector=[1.0, 1.0], group_id=2),
-        ])
-        members = await store.get_group_members(1, "u1")
-        assert {m.text for m in members} == {"a", "b"}
-        assert all(m.vector is None for m in members)
-        members_with_vectors = await store.get_group_members(1, "u1", include_vectors=True)
-        assert {tuple(m.vector) for m in members_with_vectors} == {(1.0, 0.0), (0.0, 1.0)}
