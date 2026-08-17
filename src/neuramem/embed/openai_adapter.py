@@ -1,8 +1,6 @@
 """OpenAI-compatible embedding adapter — native async, single provider."""
 
 import logging
-from typing import Optional
-
 from openai import AsyncOpenAI, APIConnectionError, APITimeoutError
 
 from neuramem.config import EmbeddingConfig
@@ -38,6 +36,12 @@ class OpenAIEmbedder:
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        blank = [i for i, text in enumerate(texts) if not text or not text.strip()]
+        if blank:
+            # Provider behavior on blank inputs is undefined (some error,
+            # some return garbage vectors). A blank text is a caller bug —
+            # fail loudly instead of silently poisoning the batch.
+            raise ValueError(f"blank texts cannot be embedded (indices {blank})")
 
         executor = RetryExecutor(
             max_retries=self._config.max_retries,

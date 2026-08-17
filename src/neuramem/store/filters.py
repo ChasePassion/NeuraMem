@@ -67,5 +67,12 @@ def compile_filter(flt: Optional[MemoryFilter]) -> str:
                 raise ValueError(
                     f"metadata filter key {key!r} is not a valid field name"
                 )
+            if not isinstance(value, (str, int, float, bool)):
+                # str(dict)/str(list) literals would never match anything —
+                # reject instead of silently returning empty result sets
+                raise ValueError(
+                    f"metadata filter value for {key!r} must be a scalar, "
+                    f"got {type(value).__name__}"
+                )
             clauses.append(f"{key} == {format_literal(value)}")
     return " and ".join(clauses)

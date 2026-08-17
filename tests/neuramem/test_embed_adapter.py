@@ -48,6 +48,16 @@ class TestOpenAIEmbedder:
         create.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_blank_texts_rejected_loudly(self):
+        """Blank texts are a caller bug — never silently poison the batch."""
+        create = AsyncMock()
+        with _patch_client(create)[0]:
+            embedder = OpenAIEmbedder(_config())
+            with pytest.raises(ValueError, match="blank texts"):
+                await embedder.embed(["hello", "  "])
+        create.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_sdk_constructed_with_zero_retries(self):
         create = AsyncMock(return_value=_embed_response([[0.0] * 4]))
         patched, ctor = _patch_client(create)

@@ -14,7 +14,7 @@ import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 from neuramem.core.models import SpanStatus
 

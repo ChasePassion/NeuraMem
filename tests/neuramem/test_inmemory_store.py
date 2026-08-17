@@ -72,6 +72,13 @@ class TestCrud:
         assert deleted == 1
         assert await store.count() == 1
 
+    @pytest.mark.asyncio
+    async def test_delete_without_args_is_noop(self, store):
+        """No ids and no filter must never mean 'delete everything'."""
+        await store.insert([_record("a"), _record("b")])
+        assert await store.delete() == 0
+        assert await store.count() == 2
+
 
 class TestSearch:
     @pytest.mark.asyncio

@@ -40,6 +40,11 @@ class TestCompileFilter:
         with pytest.raises(ValueError):
             compile_filter(MemoryFilter(metadata={"a == 1 or true": 1}))
 
+    def test_metadata_non_scalar_value_rejected(self):
+        """str(dict) literals would never match — reject, don't go silent."""
+        with pytest.raises(ValueError, match="scalar"):
+            compile_filter(MemoryFilter(metadata={"tags": ["a", "b"]}))
+
 
 # ---------------------------------------------------------------------------
 # Telemetry conformance (run against every adapter)

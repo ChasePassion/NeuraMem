@@ -72,6 +72,12 @@ class InMemoryStore:
     # -- memory CRUD ---------------------------------------------------------
 
     async def insert(self, records: list[MemoryRecord]) -> list[int]:
+        """Insert records; returns assigned ids.
+
+        Divergence from the Milvus adapter: an explicit record.id > 0 is
+        honored here (Milvus auto_id always assigns fresh ids on insert).
+        Test convenience only — production paths never pass ids to insert.
+        """
         ids = []
         for record in records:
             record_id = record.id if record.id > 0 else self._next_id
@@ -133,6 +139,10 @@ class InMemoryStore:
         ids: Optional[list[int]] = None,
         flt: Optional[MemoryFilter] = None,
     ) -> int:
+        if ids is None and flt is None:
+            # no-op, matching the Milvus adapter (empty expression deletes
+            # nothing) — deleting everything by accident must be impossible
+            return 0
         doomed = [
             r.id
             for r in self._memories.values()
