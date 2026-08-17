@@ -89,7 +89,7 @@
 | 动作 | 细节 |
 |---|---|
 | `benchmark/locomo/` → `neuramem_benchmark/` | 9 文件重组为 locomo.py / runner.py / metrics.py / judge.py / report.py（重组非重写） |
-| 硬功能移植（缺一不可） | 多进程并行与样本选择、CSV 按 sample_index+question_id 去重合并、rejudge、KV cache 分组件报告（contextvars 归属重写 thread_snapshot 逻辑，**口径对齐 RUN_RECORD 6.2**） |
+| 硬功能移植（缺一不可） | 多进程并行与样本选择、CSV 按 sample_index+question_id 去重合并、rejudge、KV cache 分组件报告（contextvars 归属重写 thread_snapshot 逻辑，指标定义沿用 RUN_RECORD 6.2；与 W3 数字不要求可比，见注意事项 2） |
 | runner 改走公共 API | `memory._memory_usage_judge` 伸手 + text→id 手工映射（run_eval.py L164-178）替换为 `report_usage_async`；答案 LLM 不再复用 `memory._llm_client`，runner 自建（同配置） |
 | ingest 完整性校验内建 | 重放完成自动核对 Milvus 记忆数 + 完成日志行，未达标 fail（s8 教训，RUN_RECORD 8.1） |
 | 杂项 | run_benchmark.py 硬编码 `PYTHON_EXEC` 改可配；locomo_prompts 的 200 条注入上限原样保留（W3 口径） |
@@ -109,7 +109,7 @@ Step 1 (core)  →  Step 2 (adapters)  →  Step 3 (pipeline)  →  Step 4 (serv
 ## 七、风险与注意事项
 
 1. **Step 3 是分数风险集中地**：judge id 协议、冲突淘汰、闭环接入全部是行为变更，方向对不对只有 W4 能裁决。缓解：Step 3 完成后先用 **1–2 个样本小规模试跑**（新库 ingest+eval），对比 W3 同样本分数提前发现回归，不要等 Step 5 才第一次见分数。
-2. **KV cache 统计的归属迁移是隐形坑**：run_eval 现在靠 `threading.local` 每线程快照归桶；Step 2 换 contextvars、Step 5 runner 若改 asyncio 并发，口径必须与 RUN_RECORD 6.2 逐项对齐，否则 W4 的 cache 数字与 W3 不可比。
+2. **KV cache 统计迁移：目标是正确，不是与 W3 对齐**：run_eval 现在靠 `threading.local` 每线程快照归桶；Step 2 换 contextvars、Step 5 若改 asyncio 并发，要求是新的归属机制不串桶、不漏记（call_label 分桶、token 加权，指标定义沿用 RUN_RECORD 6.2 的口径）。与 W3 数字**不要求可比**——W3 的 ingest 段 usage 本就缺失（样本 0-5 的 ingest_usage_stats 无法恢复），W4 拿到一份完整正确的 cache 报告即是目标。
 3. **#22 修复重试会波及判分成本**：judge.py 走 chat_json，判分解析失败现在会多打一次修复调用（成本 ×2 on garbage）；判分失败仍保守记 WRONG，与 W3 口径一致，但 rejudge/judge 的预算评估要把重试算进去。
 4. **demo 的私有伸手比架构图显示的深**：`_store._client` 直查 groups 集合、每用户独立 memories 集合（demo_memories_{user_id}）。Step 1 端口设计必须预留组查询公开接口，否则 Step 4 返工。
 5. **存量测试的处置**：13 处失败是存量（properties 部分依赖真 Milvus / v1 字段残留）。原则：依赖 InMemoryStore 能复活的按新端口重写（不硬移植），test_stream.py 直接删。测试债在本重构内清偿，不带入新包。
