@@ -127,26 +127,38 @@ async def judge_response(llm: OpenAILLM, row: Dict[str, Any]) -> tuple[str, str]
 
 
 async def answer_question(
-    memory: Memory,
+    memory: Optional[Memory],
     llm: OpenAILLM,
     qa_item: Dict[str, Any],
     evidence_texts: List[str],
     judge_on: bool,
+    no_memory: bool = False,
 ) -> Dict[str, Any]:
-    """One QA through the two-phase loop, inside a fresh usage scope."""
+    """One QA through the two-phase loop, inside a fresh usage scope.
+
+    no_memory=True is the baseline arm of the memory-uplift comparison:
+    same QA, same answer template (empty memory list), same judge — no
+    retrieval and no closed loop, so the accuracy delta against the
+    memory arm measures what the memory system itself contributes.
+    """
     user_id = qa_item["user_id"]
     question = qa_item["question"]
     start_time = time.time()
 
     with llm.usage_stats.scope():
-        # Phase 1: retrieval (correlation token)
-        result = await memory.search_async(question, user_id)
-        episodic, semantic = result.episodic, result.semantic
-        all_memories = episodic + semantic
+        if no_memory:
+            result = None
+            all_memories = []
+            recall = None
+        else:
+            # Phase 1: retrieval (correlation token)
+            result = await memory.search_async(question, user_id)
+            episodic, semantic = result.episodic, result.semantic
+            all_memories = episodic + semantic
 
-        recall = evidence_recall(
-            [m.text for m in all_memories], evidence_texts
-        )
+            recall = evidence_recall(
+                [m.text for m in all_memories], evidence_texts
+            )
 
         # Phase 2a: answer generation (runner-owned call, label "answer")
         prompt = get_answer_generation_prompt(
@@ -160,12 +172,13 @@ async def answer_question(
         final_answer = _strip_reasoning(resp.content or "")
 
         # Phase 2b: closed loop via the public facade API
-        report = await memory.report_usage_async(result, final_answer)
-        if report.assignments:
-            logger.info(
-                "Assigned %d episodic memories to narrative groups for %s",
-                len(report.assignments), qa_item["question_id"],
-            )
+        if result is not None:
+            report = await memory.report_usage_async(result, final_answer)
+            if report.assignments:
+                logger.info(
+                    "Assigned %d episodic memories to narrative groups for %s",
+                    len(report.assignments), qa_item["question_id"],
+                )
 
         row: Dict[str, Any] = {
             "sample_index": qa_item["sample_index"],
@@ -241,7 +254,9 @@ async def run(args) -> None:
     elif args.count is not None:
         qa_list = qa_list[: args.count]
 
-    if not args.no_manifest_check:
+    if args.no_memory:
+        logger.info("no-memory baseline mode: no retrieval, no closed loop")
+    elif not args.no_manifest_check:
         _check_manifests(qa_list, args.manifest_dir)
 
     # evidence texts keyed by question_id: robust to any qa filtering
@@ -258,7 +273,7 @@ async def run(args) -> None:
 
     config = build_benchmark_config(args.milvus_uri)
     llm = OpenAILLM(config.llm)  # shared with the facade: one usage aggregate
-    memory = Memory(config, llm=llm)
+    memory = None if args.no_memory else Memory(config, llm=llm)
 
     logger.info("Loaded %d questions for evaluation. Output: %s",
                 len(qa_list), args.output)
@@ -282,6 +297,7 @@ async def run(args) -> None:
                     qa_item,
                     evidence_by_qid.get(qa_item["question_id"], []),
                     args.judge,
+                    no_memory=args.no_memory,
                 )
             except Exception as e:  # noqa: BLE001 - one question must not kill the run
                 logger.error("Error processing %s: %s", qa_item["question_id"], e)
@@ -341,6 +357,11 @@ def main():
     parser.add_argument("--no-judge", dest="judge", action="store_false")
     parser.add_argument("--manifest-dir", default="result")
     parser.add_argument("--no-manifest-check", action="store_true")
+    parser.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="Baseline arm: answer without any memory injection (uplift comparison)",
+    )
     args = parser.parse_args()
     asyncio.run(run(args))
 

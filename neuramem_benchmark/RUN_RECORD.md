@@ -140,7 +140,7 @@ cd E:\code\NeuraMem
 | **W1 episodic-only 基线** | manage（episodic CRUD），无 consolidate | search（episodic top-5 向量）→ LLM 回答 → LLM 判分 | 已跑（2026-08-14） | **54.48%** |
 | **W2 完整系统闭环** | manage（episodic CRUD）+ **每 7 个 session consolidate 一次**（模拟周期巩固；末尾不补——无后续消费方） | search（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答 → usage judge（判断哪些检索记忆被用到）→ assign_to_narrative_group（用到的记忆聚成叙事组）→ LLM 判分 | 代码已就绪，**分数待重跑** | 待定 |
 | **W3 完整闭环 + MiniMax-M3** | 同 W2 | 同 W2；**全链路 LLM = MiniMax-M3**（api.minimaxi.com/v1，OpenAI 兼容；`LLM_EXTRA_BODY={"thinking":{"type":"disabled"}}` 关闭 thinking，与 OpenViking 官方口径对齐；manage/consolidate/usage judge/answer/judge 全部走 M3，评测禁用 fallback 单 provider 模式） | 已跑（2026-08-16/17，服务器分批，见第 8 节） | **69.16%** |
-| **W4 重构后系统** | 同 W3 + **冲突淘汰**（consolidate 增量合并，矛盾旧语义记忆打 retired 标记并永久过滤，物理删除仅手动 reset） | 同 W3：**模型、答题/判分 prompt、评测口径全部不变**；差异仅在实现——闭环经两段式公共 API（search_async + report_usage_async）接入、usage judge 协议 text→id、闭环保真修复（见 docs/architecture_target.md #14/#20/#21/#22 与第十一章） | 待跑（重构落地后） | 待定 |
+| **W4 重构后系统** | 同 W3 + **冲突淘汰**（consolidate 增量合并，矛盾旧语义记忆打 retired 标记并永久过滤，物理删除仅手动 reset） | 同 W3：**模型、答题/判分 prompt、评测口径全部不变**；差异仅在实现——闭环经两段式公共 API（search_async + report_usage_async）接入、usage judge 协议 text→id、闭环保真修复（见 docs/architecture_target.md #14/#20/#21/#22 与第十一章） | 已跑（2026-08-18/19，本地分批；`--no-memory` baseline 组待跑） | **65.97%** |
 
 ```text
 W1 流程: manage -> search(top-5) -> answer -> judge                                    (deepseek-chat)
@@ -220,5 +220,5 @@ W1 → W3 对比：multi-hop +15.05 / temporal +14.33 / open-domain +11.46 / sin
 - **eval 闭环走公共 API**：`search_async` → runner 自答 → `report_usage_async`（judge id 协议在库内），旧 `_memory_usage_judge` 伸手与 text 匹配删除。
 - **并发模型**：线程 → asyncio semaphore；usage 归属 contextvars scope（每题一个 scope，快照即增量），CSV 列名与 W3 完全一致。
 - **新增 `evidence_recall` 列**：OpenViking 指针解析规则（D{session}:{1-based 位置} → "speaker: text"）+ 子串命中，W4 校准。
-- **llm_config**：`MINIMAX_API_KEY` 存在时套用 W3 档位（api.minimaxi.com / MiniMax-M3 / thinking off / 10 次 × base 1s × cap 30s）；`MINIMAX_BASE_URL`/`MINIMAX_MODEL` 可覆盖（本地可用国内端点 api.minimax.chat）。W4 复现须与 W3 同 base_url。
+- **llm_config**：`MINIMAX_API_KEY` 存在时套用 W3 档位（api.minimaxi.com / MiniMax-M3 / thinking off / 10 次 × base 1s × cap 30s）；`MINIMAX_BASE_URL`/`MINIMAX_MODEL` 可覆盖（本地可用国内端点 api.minimax.chat）。
 - 环境变量兼容 legacy 名（DEEPSEEK_* / SILICONFLOW_* / MILVUS_URL）。

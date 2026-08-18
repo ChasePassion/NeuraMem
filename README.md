@@ -21,29 +21,9 @@ NeuraMem 是一个基于神经科学和记忆模型的人工智能记忆系统�
 
 ## 评测结果 (Benchmark Results)
 
-NeuraMem 在 [LoCoMo](https://github.com/snap-stanford/locomo) 长对话记忆基准上的评测结果（排除 adversarial 类题目；工作流定义见 [RUN_RECORD.md](neuramem_benchmark/RUN_RECORD.md) 第 6.1 节）：
+NeuraMem 在 [LoCoMo](https://github.com/snap-stanford/locomo) 长对话记忆基准上的评测结果（排除 adversarial 类题目）：**65.97%**（1540 题，MiniMax-M3 全链路）
 
-**W3 完整记忆闭环 + MiniMax-M3**（2026-08-17，1537 题）：
-
-| 类别 | 题目数 | 正确 | 准确率 |
-| :--- | ---: | ---: | ---: |
-| 1-multi-hop (多跳推理) | 280 | 201 | 71.79% |
-| 2-temporal (时间推理) | 321 | 198 | 61.68% |
-| 3-open-domain (开放域) | 96 | 58 | 60.42% |
-| 4-single-hop (单跳问答) | 840 | 606 | 72.14% |
-| **总体** | **1537** | **1063** | **69.16%** |
-
-**W1 episodic-only 基线 + deepseek-chat**（2026-08-15，1540 题）：
-
-| 类别 | 题目数 | 正确 | 准确率 |
-| :--- | ---: | ---: | ---: |
-| 1-multi-hop (多跳推理) | 282 | 160 | 56.74% |
-| 2-temporal (时间推理) | 321 | 152 | 47.35% |
-| 3-open-domain (开放域) | 96 | 47 | 48.96% |
-| 4-single-hop (单跳问答) | 841 | 480 | 57.07% |
-| **总体** | **1540** | **839** | **54.48%** |
-
-**评测口径**：同一份 LoCoMo 数据（10 个会话）。W3 = ingest（manage + 每 7 session consolidate）→ 混合检索（episodic top-5 + 叙事组扩展 + semantic 全量）→ LLM 回答 → usage judge + 叙事分组（reconsolidation）→ LLM 判分（lenient 模板），全链路 MiniMax-M3，平均单题时延 19.11s；同时输出 KV cache（前缀缓存）命中率（记忆系统口径 19.06%）。W1→W3 总体提升 +14.68pp（工作流与模型同时变更，增益不可单独归因）。完整的环境配置、复现命令与 OpenViking 口径差异说明见 [neuramem_benchmark/RUN_RECORD.md](neuramem_benchmark/RUN_RECORD.md)。
+工作流定义、历史成绩、评测口径与复现命令详见 [neuramem_benchmark/RUN_RECORD.md](neuramem_benchmark/RUN_RECORD.md)。
 
 一键复现：
 
