@@ -110,7 +110,3 @@ payload = {
 response = requests.post(url, json=payload)
 print(response.json())
 ```
-
----
-
-> **注意**: 项目具体结构与程序逻辑可在 [project_summary.md](project_summary.md) 文件中查看

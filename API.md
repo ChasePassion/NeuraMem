@@ -293,13 +293,18 @@ API_HOST=0.0.0.0
 API_PORT=8000
 CORS_ORIGINS=http://localhost:3000,http://localhost:8080
 
-# 数据库
-MILVUS_URL=http://localhost:19530
+# LLM (OpenAI 兼容端点均可)
+LLM_BASE_URL=https://api.minimaxi.com/v1
+LLM_API_KEY=your_api_key
+LLM_MODEL=MiniMax-M3
 
-# LLM
-DEEPSEEK_API_KEY=your_api_key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
+# Embedding (OpenAI 兼容端点均可)
+EMBEDDING_API_KEY=your_api_key
+EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1
+EMBEDDING_MODEL=Qwen/Qwen3-Embedding-4B
 
-# Embedding
-SILICONFLOW_API_KEY=your_api_key
+# 向量存储 (Milvus)
+STORE_URI=http://localhost:19530
+STORE_COLLECTION_NAME=memories
+STORE_GROUPS_COLLECTION_NAME=groups
 ```
