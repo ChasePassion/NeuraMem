@@ -123,21 +123,29 @@ class Memory:
                 "neuramem.report_usage",
                 {"user_id": result.user_id, "candidates": len(result.episodic)},
             ) as span:
-                used_ids = await self._usage_judge.judge_used_memories(
+                judgment = await self._usage_judge.judge_used_memories(
                     result.episodic, result.query, answer_text
                 )
+                used_ids = judgment.used_ids
                 assignments: dict[int, int] = {}
                 if used_ids:
                     assignments = await self._narrative.assign_to_narrative_group(
                         used_ids, result.user_id
                     )
                 span.set_attributes(
-                    {"used": len(used_ids), "assigned": len(assignments)}
+                    {
+                        "used": len(used_ids),
+                        "assigned": len(assignments),
+                        "dropped_ids": len(judgment.dropped_ids),
+                        "malformed": judgment.malformed_count,
+                    }
                 )
                 return UsageReport(
                     judged_candidates=len(result.episodic),
                     used_memory_ids=used_ids,
                     assignments=assignments,
+                    dropped_ids=judgment.dropped_ids,
+                    malformed_count=judgment.malformed_count,
                 )
         except Exception as e:  # noqa: BLE001 - never break the answer path
             logger.warning("report_usage failed (isolated): %s", e)
@@ -296,6 +304,7 @@ class Memory:
             extraction = await self._semantic.extract(episodic, semantic)
 
             # conflict elimination: tombstone contradicted semantic memories
+            retired_texts: list[str] = []
             for retire_id in extraction.retire_ids:
                 stale = await self._store.query(
                     _with(user_filter, id_in=[retire_id]),
@@ -304,6 +313,12 @@ class Memory:
                 if stale:
                     stale[0].retired = True
                     await self._store.upsert([stale[0]])  # vector backfilled
+                    retired_texts.append(stale[0].text)
+            if extraction.retire_ids:
+                logger.info(
+                    "conflict elimination: retired semantic ids=%s texts=%s",
+                    extraction.retire_ids, retired_texts,
+                )
 
             created = 0
             if extraction.write_semantic and extraction.facts:

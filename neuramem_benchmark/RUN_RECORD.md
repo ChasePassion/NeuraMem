@@ -220,5 +220,8 @@ W1 → W3 对比：multi-hop +15.05 / temporal +14.33 / open-domain +11.46 / sin
 - **eval 闭环走公共 API**：`search_async` → runner 自答 → `report_usage_async`（judge id 协议在库内），旧 `_memory_usage_judge` 伸手与 text 匹配删除。
 - **并发模型**：线程 → asyncio semaphore；usage 归属 contextvars scope（每题一个 scope，快照即增量），CSV 列名与 W3 完全一致。
 - **新增 `evidence_recall` 列**：OpenViking 指针解析规则（D{session}:{1-based 位置} → "speaker: text"）+ 子串命中，W4 校准。
+- **per-question trace JSONL**：runner 默认随 CSV 写 `<output 前缀>.trace.jsonl`，每题一行——完整 answer prompt（system+user）、检索记忆全文（episodic/semantic 分列）、evidence 逐指针命中、分段耗时（retrieval/answer/usage_judge/judge）、按 label 的 usage 明细、判分 raw 输出。错题归因与性能分析数据集（`--no-trace` 关闭）。
+- **答题 prompt 单一源**：canonical `build_answer_prompt` 上移至 `src/neuramem/prompts.py`，benchmark（ref="2023"，快照验证字节不变）/ server `/v1/chat` / demo（ref=当前年，不截断、回写喂 `extract_final_answer` 后的最终答案）三消费者同构——评测分数与产品行为一致。模板两句 LoCoMo 时间硬编码参数化为年份窗口（ref=2023 时还原原句）。
+- **id 协议异常留痕（#14 可观测）**：usage judge / semantic writer 返回的幻觉 id（不在候选集）与坏值（非整数）不再静默丢弃——逐项容错（一个坏值不再丢整题判定），记入 `UsageReport.dropped_ids/malformed_count`（runner trace 的 `usage_report` 区块）、WARNING 日志；consolidate 淘汰时记录被淘汰 id 与原文。
 - **llm_config**：`MINIMAX_API_KEY` 存在时套用 W3 档位（api.minimaxi.com / MiniMax-M3 / thinking off / 10 次 × base 1s × cap 30s）；`MINIMAX_BASE_URL`/`MINIMAX_MODEL` 可覆盖（本地可用国内端点 api.minimax.chat）。
 - 环境变量兼容 legacy 名（DEEPSEEK_* / SILICONFLOW_* / MILVUS_URL）。

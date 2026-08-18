@@ -10,6 +10,12 @@ per-question deltas directly — no before/after snapshots needed).
 NEW: refuses to evaluate samples without an ingest manifest (s8 lesson)
 and records an evidence-recall@k column (metrics.py, OpenViking pointer
 resolution).
+
+Per-question trace JSONL (default on, --no-trace disables): full answer
+prompt (system+user), retrieved memory texts, per-pointer evidence hits,
+phase timings (retrieval/answer/usage_judge/judge), per-label usage
+deltas and the raw judge output — the error-attribution and performance
+dataset the CSV deliberately omits.
 """
 
 import argparse
@@ -19,15 +25,17 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
 import dotenv
 
 from neuramem.config import MemoryConfig
+from neuramem.core.models import MemoryRecord
 from neuramem.llm.openai_adapter import OpenAILLM, UsageStats
 from neuramem.memory import Memory
+from neuramem.prompts import ANSWER_SYSTEM_PROMPT, extract_final_answer
 from neuramem_benchmark.llm_config import build_benchmark_config
 from neuramem_benchmark.locomo import load_locomo_qa_list, load_locomo_samples
 from neuramem_benchmark.locomo_prompts import (
@@ -36,17 +44,16 @@ from neuramem_benchmark.locomo_prompts import (
     JUDGE_SYSTEM_PROMPT,
     preprocess_answer,
 )
-from neuramem_benchmark.metrics import evidence_recall, resolve_evidence_texts
+from neuramem_benchmark.metrics import (
+    evidence_recall,
+    evidence_recall_detail,
+    resolve_evidence_texts,
+)
 
 dotenv.load_dotenv(".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
-
-ANSWER_SYSTEM_PROMPT = (
-    "You are a helpful assistant answering questions about past "
-    "conversations accurately."
-)
 
 QA_FIELDNAMES = [
     "sample_index",
@@ -73,17 +80,41 @@ QA_FIELDNAMES = [
 
 
 def _strip_reasoning(raw: str) -> str:
-    think_open = chr(60) + "think" + chr(62)
-    think_close = chr(60) + "/think" + chr(62)
-    if think_open in raw and think_close in raw:
-        raw = raw.split(think_close, 1)[-1].strip()
-    if "ANSWER:" in raw:
-        return raw.split("ANSWER:")[-1].strip()
-    return raw.strip()
+    """Back-compat alias; canonical implementation lives in prompts."""
+    return extract_final_answer(raw)
 
 
-async def judge_response(llm: OpenAILLM, row: Dict[str, Any]) -> tuple[str, str]:
-    """LLM-as-judge for one row (lenient rubric, W3 prompt verbatim)."""
+def _memory_dicts(records: List[MemoryRecord]) -> List[Dict[str, Any]]:
+    """Serializable view of retrieved records for the trace (no vectors)."""
+    return [
+        {
+            "id": m.id,
+            "memory_type": m.memory_type,
+            "text": m.text,
+            "ts": m.ts,
+            "chat_id": m.chat_id,
+            "group_id": m.group_id,
+        }
+        for m in records
+    ]
+
+
+def _parse_evidence_pointers(raw: str) -> List[str]:
+    try:
+        parsed = json.loads(raw) if raw else []
+        return [str(p) for p in parsed] if isinstance(parsed, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+async def judge_response(
+    llm: OpenAILLM, row: Dict[str, Any]
+) -> Tuple[str, str, str]:
+    """LLM-as-judge for one row (lenient rubric, W3 prompt verbatim).
+
+    Returns (label, reasoning, raw_response) — raw lands in the trace so
+    judge parse fallbacks are auditable.
+    """
     category_num = int(row["category"]) if str(row["category"]).isdigit() else 1
     gold = preprocess_answer(category_num, row["answer"])
     prompt = get_judge_prompt(
@@ -122,8 +153,10 @@ async def judge_response(llm: OpenAILLM, row: Dict[str, Any]) -> tuple[str, str]
                 label = "WRONG"
             reasoning = raw[:300]
     except Exception as e:  # noqa: BLE001 - judge failure scores WRONG
-        return "WRONG", f"Judge call failed: {e}"
-    return ("CORRECT", reasoning) if "CORRECT" in label else ("WRONG", reasoning)
+        return "WRONG", f"Judge call failed: {e}", ""
+    if "CORRECT" in label:
+        return "CORRECT", reasoning, raw
+    return "WRONG", reasoning, raw
 
 
 async def answer_question(
@@ -133,32 +166,43 @@ async def answer_question(
     evidence_texts: List[str],
     judge_on: bool,
     no_memory: bool = False,
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """One QA through the two-phase loop, inside a fresh usage scope.
 
     no_memory=True is the baseline arm of the memory-uplift comparison:
     same QA, same answer template (empty memory list), same judge — no
     retrieval and no closed loop, so the accuracy delta against the
     memory arm measures what the memory system itself contributes.
+
+    Returns (csv_row, trace_record): the trace carries everything the CSV
+    omits — full prompts, retrieved memory texts, per-phase timings,
+    per-label usage deltas and the raw judge output.
     """
     user_id = qa_item["user_id"]
     question = qa_item["question"]
     start_time = time.time()
+    t0 = time.perf_counter()
+    timings: Dict[str, int] = {}
 
     with llm.usage_stats.scope():
+        episodic: List[MemoryRecord] = []
+        semantic: List[MemoryRecord] = []
         if no_memory:
             result = None
-            all_memories = []
+            all_memories: List[MemoryRecord] = []
             recall = None
+            hits = None
         else:
             # Phase 1: retrieval (correlation token)
             result = await memory.search_async(question, user_id)
+            timings["retrieval_ms"] = round((time.perf_counter() - t0) * 1000)
             episodic, semantic = result.episodic, result.semantic
             all_memories = episodic + semantic
 
-            recall = evidence_recall(
+            hits = evidence_recall_detail(
                 [m.text for m in all_memories], evidence_texts
             )
+            recall = None if hits is None else any(hits)
 
         # Phase 2a: answer generation (runner-owned call, label "answer")
         prompt = get_answer_generation_prompt(
@@ -166,14 +210,27 @@ async def answer_question(
             search_results=all_memories,
             reference_date="2023",
         )
+        t_answer = time.perf_counter()
         resp = await llm.complete(
             ANSWER_SYSTEM_PROMPT, prompt, call_label="answer"
         )
+        timings["answer_ms"] = round((time.perf_counter() - t_answer) * 1000)
         final_answer = _strip_reasoning(resp.content or "")
 
         # Phase 2b: closed loop via the public facade API
+        usage_report_trace: Optional[Dict[str, Any]] = None
         if result is not None:
+            t_report = time.perf_counter()
             report = await memory.report_usage_async(result, final_answer)
+            timings["usage_judge_ms"] = round(
+                (time.perf_counter() - t_report) * 1000
+            )
+            usage_report_trace = {
+                "used_ids": report.used_memory_ids,
+                "assignments": dict(report.assignments),
+                "dropped_ids": report.dropped_ids,
+                "malformed_count": report.malformed_count,
+            }
             if report.assignments:
                 logger.info(
                     "Assigned %d episodic memories to narrative groups for %s",
@@ -197,13 +254,19 @@ async def answer_question(
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
+        judge_raw = ""
         if judge_on:
-            row["result"], row["reasoning"] = await judge_response(llm, row)
+            t_judge = time.perf_counter()
+            row["result"], row["reasoning"], judge_raw = await judge_response(
+                llm, row
+            )
+            timings["judge_ms"] = round((time.perf_counter() - t_judge) * 1000)
 
         # scope snapshots ARE this question's deltas (fresh scope per task)
         total = llm.usage_stats.scope_snapshot()
         answer_s = llm.usage_stats.scope_snapshot("answer")
         usage_judge_s = llm.usage_stats.scope_snapshot("usage_judge")
+        judge_s = llm.usage_stats.scope_snapshot("judge")
         row["cache_hit_tokens"] = total["cache_read_tokens"]
         row["cache_prompt_tokens"] = (
             total["input_tokens"]
@@ -226,7 +289,48 @@ async def answer_question(
             + usage_judge_s["input_tokens"] + usage_judge_s["cache_read_tokens"]
             + usage_judge_s["cache_write_tokens"]
         )
-    return row
+
+        timings["total_ms"] = round((time.perf_counter() - t0) * 1000)
+        trace: Dict[str, Any] = {
+            "question_id": qa_item["question_id"],
+            "sample_index": qa_item["sample_index"],
+            "sample_id": qa_item["sample_id"],
+            "category": qa_item["category"],
+            "mode": "no_memory" if no_memory else "memory",
+            "timestamp": row["timestamp"],
+            "question": question,
+            "gold_answer": qa_item["answer"],
+            "evidence": {
+                "pointers": _parse_evidence_pointers(qa_item["evidence"]),
+                "texts": evidence_texts,
+                "hits": hits,
+                "recall": None if recall is None else int(recall),
+            },
+            "retrieval": {
+                "retrieved_count": len(all_memories),
+                "episodic": _memory_dicts(episodic),
+                "semantic": _memory_dicts(semantic),
+            },
+            "prompt": {
+                "system": ANSWER_SYSTEM_PROMPT,
+                "user": prompt,
+                "model": llm.model_id,
+            },
+            "timings_ms": timings,
+            "usage": {
+                "answer": answer_s,
+                "usage_judge": usage_judge_s,
+                "judge": judge_s,
+            },
+            "usage_report": usage_report_trace,
+            "response": final_answer,
+            "judge": {
+                "result": row["result"],
+                "reasoning": row["reasoning"],
+                "raw": judge_raw,
+            },
+        }
+    return row, trace
 
 
 def _check_manifests(qa_list: List[Dict[str, Any]], manifest_dir: str) -> None:
@@ -283,6 +387,12 @@ async def run(args) -> None:
     writer.writeheader()
     csv_file.flush()
 
+    trace_file = None
+    if not args.no_trace:
+        trace_path = os.path.splitext(args.output)[0] + ".trace.jsonl"
+        trace_file = open(trace_path, "w", encoding="utf-8")
+        logger.info("Trace output: %s", trace_path)
+
     semaphore = asyncio.Semaphore(args.threads)
     evaluated = 0
     start_time = time.time()
@@ -291,7 +401,7 @@ async def run(args) -> None:
         nonlocal evaluated
         async with semaphore:
             try:
-                row = await answer_question(
+                row, trace = await answer_question(
                     memory,
                     llm,
                     qa_item,
@@ -304,6 +414,9 @@ async def run(args) -> None:
                 return
             writer.writerow(row)
             csv_file.flush()
+            if trace_file is not None:
+                trace_file.write(json.dumps(trace, ensure_ascii=False) + "\n")
+                trace_file.flush()
             evaluated += 1
 
     tasks = [asyncio.create_task(worker(q)) for q in qa_list]
@@ -311,6 +424,8 @@ async def run(args) -> None:
         await _
 
     csv_file.close()
+    if trace_file is not None:
+        trace_file.close()
     elapsed = time.time() - start_time
     logger.info("Evaluation complete! Processed %d questions in %.1fs",
                 evaluated, elapsed)
@@ -361,6 +476,11 @@ def main():
         "--no-memory",
         action="store_true",
         help="Baseline arm: answer without any memory injection (uplift comparison)",
+    )
+    parser.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="Disable the per-question trace JSONL (prompts, memories, timings)",
     )
     args = parser.parse_args()
     asyncio.run(run(args))

@@ -6,7 +6,11 @@ import pytest
 
 from neuramem_benchmark.llm_config import apply_minimax_primary
 from neuramem_benchmark.locomo import count_samples, load_locomo_qa_list, load_locomo_samples
-from neuramem_benchmark.metrics import evidence_recall, resolve_evidence_texts
+from neuramem_benchmark.metrics import (
+    evidence_recall,
+    evidence_recall_detail,
+    resolve_evidence_texts,
+)
 
 DATA = "data/locomo10.json"
 
@@ -59,6 +63,19 @@ class TestEvidenceMetrics:
         assert evidence_recall(retrieved, ["Alice: I adopted a golden retriever puppy last month."]) is True
         assert evidence_recall(["Bob: unrelated memory"], ["Alice: I adopted a golden retriever puppy."]) is False
         assert evidence_recall(retrieved, []) is None
+
+    def test_detail_flags_per_evidence(self):
+        retrieved = ["Alice: I adopted a golden retriever puppy."]
+        evidence = ["Alice: I adopted a golden retriever puppy.", "Bob: unrelated fact."]
+        assert evidence_recall_detail(retrieved, evidence) == [True, False]
+        assert evidence_recall_detail([], evidence) == [False, False]
+        assert evidence_recall_detail(retrieved, []) is None
+
+    def test_recall_consistent_with_detail(self):
+        retrieved = ["Bob: unrelated memory"]
+        evidence = ["Alice: I adopted a golden retriever puppy."]
+        detail = evidence_recall_detail(retrieved, evidence)
+        assert evidence_recall(retrieved, evidence) is any(detail)
 
     def test_real_dataset_evidence_resolves(self):
         """Most real evidence pointers must resolve to utterance texts."""
@@ -120,3 +137,32 @@ class TestManifestGate:
 
         (tmp_path / "ingest_manifest_4.json").write_text("{}", encoding="utf-8")
         _check_manifests([{"sample_index": 4}], str(tmp_path))  # no raise
+
+
+class TestTraceHelpers:
+    def test_memory_dicts_shape_and_no_vector(self):
+        from neuramem_benchmark.runner import _memory_dicts
+        from neuramem.core.models import MemoryRecord
+
+        record = MemoryRecord(
+            id=7, user_id="u", memory_type="episodic", ts=1, chat_id="c",
+            text="hello", group_id=3, vector=[0.1, 0.2],
+        )
+        assert _memory_dicts([record]) == [
+            {
+                "id": 7,
+                "memory_type": "episodic",
+                "text": "hello",
+                "ts": 1,
+                "chat_id": "c",
+                "group_id": 3,
+            }
+        ]
+
+    def test_parse_evidence_pointers(self):
+        from neuramem_benchmark.runner import _parse_evidence_pointers
+
+        assert _parse_evidence_pointers('["D1:9", "D1:11"]') == ["D1:9", "D1:11"]
+        assert _parse_evidence_pointers("") == []
+        assert _parse_evidence_pointers("not json") == []
+        assert _parse_evidence_pointers('{"a": 1}') == []

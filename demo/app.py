@@ -9,6 +9,7 @@ through report_usage_async; panels read the store port via the public
 """
 
 import asyncio
+import datetime
 import logging
 import os
 import time
@@ -20,15 +21,17 @@ from neuramem.config import MemoryConfig, StoreConfig
 from neuramem.core.models import MemoryFilter
 from neuramem.llm.openai_adapter import OpenAILLM
 from neuramem.memory import Memory
-from neuramem.prompts import MEMORY_ANSWER_PROMPT
+from neuramem.prompts import (
+    ANSWER_SYSTEM_PROMPT,
+    build_answer_prompt,
+    extract_final_answer,
+)
 
 dotenv.load_dotenv(".env")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEMO_EPISODIC_IN_PROMPT = 3
-DEMO_SEMANTIC_IN_PROMPT = 3
 DEMO_HISTORY_PAIRS = 3
 
 
@@ -95,28 +98,28 @@ class MemoryDemoApp:
 
     # -- chat ----------------------------------------------------------------
 
-    def _context(self, rendered: str) -> str:
+    def _history_block(self) -> str:
         pairs = self.chat_history[-DEMO_HISTORY_PAIRS * 2:]
-        history_lines = [
-            f"  {msg['role']}: {msg['content']}" for msg in pairs
-        ] or ["  (no history yet)"]
+        if not pairs:
+            return ""
+        history_lines = [f"  {msg['role']}: {msg['content']}" for msg in pairs]
         return (
-            f"{rendered}\n\nHere are the history messages:\n"
+            "Here are the recent conversation messages for context:\n"
             + "\n".join(history_lines)
-            + "\n\nHere is the current user message:\n"
+            + "\n\n"
         )
 
     async def _answer_stream(self, message: str):
+        # same chain as the benchmark runner: all retrieved memories into
+        # the canonical answer prompt, current-year temporal anchor
         result = await self.memory.search_async(message, self.current_user_id)
-        context = self._context(
-            result.render(
-                max_episodic=DEMO_EPISODIC_IN_PROMPT,
-                max_semantic=DEMO_SEMANTIC_IN_PROMPT,
-            )
+        user_prompt = self._history_block() + build_answer_prompt(
+            question=message,
+            memories=result.episodic + result.semantic,
+            reference_date=str(datetime.date.today().year),
         )
-        system_prompt = f"{MEMORY_ANSWER_PROMPT}\n\n{context}"
         async for chunk in self.answer_llm.stream(
-            system_prompt, message, call_label="answer"
+            ANSWER_SYSTEM_PROMPT, user_prompt, call_label="answer"
         ):
             yield chunk, result
 
@@ -141,9 +144,15 @@ class MemoryDemoApp:
         task.add_done_callback(self._background_tasks.discard)
 
     async def _post_turn(self, message: str, answer: str, result):
+        final_answer = extract_final_answer(answer)
         try:
             if result is not None:
-                report = await self.memory.report_usage_async(result, answer)
+                report = await self.memory.report_usage_async(result, final_answer)
+                if report.dropped_ids or report.malformed_count:
+                    logger.warning(
+                        "usage judge id anomalies: dropped=%s malformed=%d",
+                        report.dropped_ids, report.malformed_count,
+                    )
                 logger.info(
                     "reconsolidation: used=%s assigned=%s",
                     report.used_memory_ids, report.assignments,
@@ -152,7 +161,7 @@ class MemoryDemoApp:
             logger.warning("report_usage failed: %s", e)
         try:
             await self.memory.manage_async(
-                message, answer, self.current_user_id,
+                message, final_answer, self.current_user_id,
                 chat_id=f"chat_{int(time.time())}",
             )
         except Exception as e:  # noqa: BLE001

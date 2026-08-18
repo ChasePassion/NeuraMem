@@ -70,13 +70,24 @@ class SemanticWriter:
         if not isinstance(raw_retire, list):
             raw_retire = []
         retire_ids = []
+        dropped_candidates = []
         for item in raw_retire:
             try:
                 candidate = int(item)
             except (TypeError, ValueError):
+                dropped_candidates.append(item)
                 continue  # garbage from the model must not crash consolidation
             if candidate in known_ids:
                 retire_ids.append(candidate)
+            else:
+                dropped_candidates.append(item)
+        if dropped_candidates:
+            # id-protocol anomaly record (#14 observability): the writer
+            # asked to retire ids that do not exist (or are not ints)
+            logger.warning(
+                "semantic retire candidates dropped (malformed/unknown ids): %s",
+                dropped_candidates,
+            )
         facts = [str(f) for f in parsed.get("facts", []) if f]
         write_semantic = bool(parsed.get("write_semantic", False))
 

@@ -148,11 +148,18 @@ class SearchResult(BaseModel):
 
 
 class UsageReport(BaseModel):
-    """Outcome of Memory.report_usage (the judge -> assign write-back)."""
+    """Outcome of Memory.report_usage (the judge -> assign write-back).
+
+    dropped_ids / malformed_count record id-protocol output anomalies
+    (#14 observability): hallucinated ids the judge returned that are not
+    in the candidate set, and entries that were not ints at all.
+    """
 
     judged_candidates: int = 0
     used_memory_ids: list[int] = Field(default_factory=list)
     assignments: dict[int, int] = Field(default_factory=dict)
+    dropped_ids: list[int] = Field(default_factory=list)
+    malformed_count: int = 0
 
 
 class ConsolidationStats(BaseModel):
