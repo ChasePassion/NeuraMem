@@ -5,9 +5,11 @@ env names (DEEPSEEK_*/SILICONFLOW_*/MILVUS_URL — the repo .env keeps
 working), then apply_minimax_primary() overrides the LLM section with
 MiniMax when MINIMAX_API_KEY is set, using the W3-stable retry profile
 (10 attempts, base 1.0s, cap 30s — RUN_RECORD §8) and the thinking-off
-escape hatch. W4 must lock the same base_url as W3 (api.minimaxi.com)
-for comparability; MINIMAX_BASE_URL / MINIMAX_MODEL allow overrides
-(e.g. the domestic api.minimax.chat endpoint for local runs).
+escape hatch. The default base_url is the MiniMax Coding Plan (Token
+Plan) domestic OpenAI-compatible endpoint (api.minimaxi.com/v1, model
+MiniMax-M3, keys prefixed sk-cp-). MINIMAX_BASE_URL / MINIMAX_MODEL
+allow overrides (e.g. the pay-as-you-go domestic api.minimax.chat/v1
+endpoint with a regular API key).
 """
 
 import logging

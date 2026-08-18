@@ -46,10 +46,10 @@ def _normalize(text: str) -> str:
     return " ".join(text.lower().split())
 
 
-def evidence_recall(
+def evidence_recall_detail(
     retrieved_texts: List[str], evidence_texts: List[str]
-) -> Optional[bool]:
-    """True when at least one evidence utterance appears in the retrieved set.
+) -> Optional[List[bool]]:
+    """Per-evidence hit flags (error attribution: WHICH evidence missed).
 
     Returns None when no evidence text could be resolved (question skipped
     in the aggregate rate rather than counted as a miss).
@@ -57,8 +57,18 @@ def evidence_recall(
     if not evidence_texts:
         return None
     normalized_retrieved = [_normalize(t) for t in retrieved_texts if t]
-    for evidence_text in evidence_texts:
-        needle = _normalize(evidence_text)
-        if any(needle in retrieved for retrieved in normalized_retrieved):
-            return True
-    return False
+    return [
+        any(_normalize(evidence_text) in retrieved
+            for retrieved in normalized_retrieved)
+        for evidence_text in evidence_texts
+    ]
+
+
+def evidence_recall(
+    retrieved_texts: List[str], evidence_texts: List[str]
+) -> Optional[bool]:
+    """True when at least one evidence utterance appears in the retrieved set."""
+    detail = evidence_recall_detail(retrieved_texts, evidence_texts)
+    if detail is None:
+        return None
+    return any(detail)
