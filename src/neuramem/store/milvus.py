@@ -6,7 +6,11 @@ Differences from legacy clients/milvus_store.py:
 - ONE groups collection with a user_id field instead of per-user
   groups_{user_id} collections (#15) — collection count no longer scales
   with tenants
-- upsert for in-place updates with stable ids (#17); delete+add is gone
+- upsert for in-place updates with stable ids (#17); delete+add is gone.
+  Both collection schemas use auto_id=False with app-side snowflake ids
+  (core/ids.py) — on auto_id collections Milvus silently re-ids every
+  upserted row (delete + insert-with-new-id), orphaning every id a
+  caller ever saw
 - all calls bridge to a dedicated thread pool (pymilvus has no native
   async), pool size explicit in StoreConfig (#7)
 - dim is a parameter everywhere (no 2560 literals)
@@ -27,6 +31,7 @@ from pymilvus import CollectionSchema, DataType, FieldSchema, MilvusClient
 
 from neuramem.config import StoreConfig
 from neuramem.core.exceptions import MilvusConnectionError
+from neuramem.core.ids import new_id
 from neuramem.core.models import (
     GroupInfo,
     GroupMatch,
@@ -87,7 +92,7 @@ class MilvusStore:
             self._client.load_collection(name)
             return
         fields = [
-            FieldSchema("id", DataType.INT64, is_primary=True, auto_id=True),
+            FieldSchema("id", DataType.INT64, is_primary=True, auto_id=False),
             FieldSchema("user_id", DataType.VARCHAR, max_length=128),
             FieldSchema("memory_type", DataType.VARCHAR, max_length=32),
             FieldSchema("ts", DataType.INT64),
@@ -116,7 +121,7 @@ class MilvusStore:
             self._client.load_collection(name)
             return name
         fields = [
-            FieldSchema("group_id", DataType.INT64, is_primary=True, auto_id=True),
+            FieldSchema("group_id", DataType.INT64, is_primary=True, auto_id=False),
             FieldSchema("user_id", DataType.VARCHAR, max_length=128),
             FieldSchema("centroid_vector", DataType.FLOAT_VECTOR, dim=dim),
             FieldSchema("size", DataType.INT64),
@@ -176,7 +181,13 @@ class MilvusStore:
     # -- memory CRUD -------------------------------------------------------------
 
     async def insert(self, records: list[MemoryRecord]) -> list[int]:
-        entities = [self._record_to_entity(r, include_id=False) for r in records]
+        # App-side snowflake ids: auto_id would work for inserts, but then
+        # every later upsert re-ids the row (see module docstring). Fill
+        # ids here so callers keep a stable handle from birth.
+        for record in records:
+            if record.id <= 0:
+                record.id = new_id()
+        entities = [self._record_to_entity(r, include_id=True) for r in records]
         result = await self._run(
             self._client.insert, collection_name=self._config.collection_name, data=entities
         )
@@ -232,10 +243,12 @@ class MilvusStore:
             for hit in hits:
                 entity = dict(hit.get("entity", {}))
                 entity["id"] = hit.get("id")
+                native_score = hit.get("distance")
                 page.append(
                     SearchHit(
                         record=self._entity_to_record(entity),
-                        distance=hit.get("distance"),
+                        distance=native_score,
+                        score=native_score,
                     )
                 )
             results.append(page)
@@ -342,16 +355,18 @@ class MilvusStore:
     ) -> Optional[int]:
         def _insert():
             name = self._ensure_groups_collection_sync(len(centroid_vector))
+            group_id = new_id()
             result = self._client.insert(
                 collection_name=name,
                 data=[{
+                    "group_id": group_id,
                     "user_id": user_id,
                     "centroid_vector": centroid_vector,
                     "size": size,
                 }],
             )
             ids = result.get("ids") or result.get("primary_keys")
-            return list(ids)[0] if ids else None
+            return list(ids)[0] if ids else group_id
 
         return await self._run(_insert)
 

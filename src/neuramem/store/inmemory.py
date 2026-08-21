@@ -74,9 +74,10 @@ class InMemoryStore:
     async def insert(self, records: list[MemoryRecord]) -> list[int]:
         """Insert records; returns assigned ids.
 
-        Divergence from the Milvus adapter: an explicit record.id > 0 is
-        honored here (Milvus auto_id always assigns fresh ids on insert).
-        Test convenience only — production paths never pass ids to insert.
+        An explicit record.id > 0 is honored (parity with the Milvus
+        adapter, which fills app-side snowflake ids since both schemas
+        moved to auto_id=False); records without ids get small
+        sequential ids — deterministic, which some tests rely on.
         """
         ids = []
         for record in records:
@@ -120,7 +121,11 @@ class InMemoryStore:
             scored.sort(key=lambda pair: pair[0], reverse=True)
             results.append(
                 [
-                    SearchHit(record=record.model_copy(), distance=1.0 - similarity)
+                    SearchHit(
+                        record=record.model_copy(),
+                        distance=1.0 - similarity,
+                        score=similarity,
+                    )
                     for similarity, record in scored[:limit]
                 ]
             )
