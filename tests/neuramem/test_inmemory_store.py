@@ -95,6 +95,8 @@ class TestSearch:
         assert hits[0].record.text == "same direction"
         assert all(h.record.user_id == "u1" for h in hits)
         assert hits[0].distance == pytest.approx(0.0)
+        assert hits[0].score == pytest.approx(1.0)
+        assert hits[1].score == pytest.approx(0.0)
 
     @pytest.mark.asyncio
     async def test_retired_excluded_via_filter(self, store):
@@ -130,7 +132,7 @@ class TestGroups:
 
     @pytest.mark.asyncio
     async def test_groups_isolated_by_user(self, store):
-        gid_a = await store.insert_group("ua", [1.0, 0.0])
+        await store.insert_group("ua", [1.0, 0.0])
         gid_b = await store.insert_group("ub", [0.0, 1.0])
         matches = await store.search_groups("ub", [0.0, 1.0])
         assert [m.group_id for m in matches] == [gid_b]

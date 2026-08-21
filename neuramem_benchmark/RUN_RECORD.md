@@ -1,7 +1,8 @@
-# NeuraMem LoCoMo Benchmark — Run Record
+# NeuraMem LoCoMo Benchmark — Historical Run Record
 
 > 本文件记录 2026-08-14/15 首次完整跑分（--all-samples）的环境与配置，用于系统升级后复现同口径跑分并做前后对比。
 > W3（完整闭环 + MiniMax-M3）跑分记录见第 8 节（2026-08-17，69.16%）。
+> 当前稳定 ID 重跑结果见第 10 节；日常运行入口和目录结构见 docs/benchmark.md。
 > API keys 一律不写入本文件，均从 .env 读取；下文 `<from .env>` 表示该变量的值只存在于 .env。
 
 ## 1. 本次跑分概要
@@ -213,7 +214,7 @@ W1 → W3 对比：multi-hop +15.05 / temporal +14.33 / open-domain +11.46 / sin
 | `python benchmark/locomo/run_eval.py` | `python -m neuramem_benchmark.runner` |
 | `python benchmark/locomo/stat_results.py` | `python -m neuramem_benchmark.report` |
 | `python benchmark/locomo/run_benchmark.py` | `python -m neuramem_benchmark.run_benchmark` |
-| `python benchmark/locomo/judge.py` / `rejudge.py` | `python -m neuramem_benchmark.judge` / `rejudge` |
+| `python benchmark/locomo/judge.py` / `rejudge.py` | `python -m neuramem_benchmark.judge` / `python -m neuramem_benchmark.judge --include-wrong` |
 
 行为要点：
 - **ingest 完整性 manifest**（8.1 教训内建化）：每个样本 ingest 结束写 `result/ingest_manifest_{idx}.json`（含最终 Milvus 计数）；runner 默认拒绝无 manifest 的样本（`--no-manifest-check` 可越过）。
@@ -225,3 +226,20 @@ W1 → W3 对比：multi-hop +15.05 / temporal +14.33 / open-domain +11.46 / sin
 - **id 协议异常留痕（#14 可观测）**：usage judge / semantic writer 返回的幻觉 id（不在候选集）与坏值（非整数）不再静默丢弃——逐项容错（一个坏值不再丢整题判定），记入 `UsageReport.dropped_ids/malformed_count`（runner trace 的 `usage_report` 区块）、WARNING 日志；consolidate 淘汰时记录被淘汰 id 与原文。
 - **llm_config**：`MINIMAX_API_KEY` 存在时套用 W3 档位（api.minimaxi.com / MiniMax-M3 / thinking off / 10 次 × base 1s × cap 30s）；`MINIMAX_BASE_URL`/`MINIMAX_MODEL` 可覆盖（本地可用国内端点 api.minimax.chat）。
 - 环境变量兼容 legacy 名（DEEPSEEK_* / SILICONFLOW_* / MILVUS_URL）。
+
+## 10. Stable-ID rerun (2026-08-21/22)
+
+After the Milvus primary-key migration (`auto_id=False` plus application-side IDs), samples 0-9 were rerun with the current full closed-loop benchmark and MiniMax-M3. Category 5 adversarial questions remain excluded.
+
+| Metric | Value |
+|---|---:|
+| Samples completed | 10 |
+| Graded questions | 1540 |
+| Correct | 1029 |
+| Wrong | 511 |
+| Overall accuracy | **66.82%** |
+| Weighted average latency | 11.84s |
+| Failed ingest turns | 1 (s8) |
+| Trace ghost IDs | 0 for s0-s9 |
+
+Per-sample results and the reproducible scorecard command are maintained in [docs/benchmark.md](../docs/benchmark.md). The generated files under `result/locomo_full_rerun/` are intentionally ignored by Git.

@@ -1,8 +1,4 @@
-"""LoCoMo dataset loading and parsing (single home for both consumers).
-
-Ported from run_eval.load_locomo_qa_list and
-import_to_neuramem.load_looco_samples — logic unchanged.
-"""
+"""LoCoMo dataset loading and parsing for ingest and evaluation."""
 
 import json
 import os
@@ -21,14 +17,20 @@ def _resolve_path(path: str) -> str:
     raise FileNotFoundError(f"LoCoMo dataset file not found: {path}")
 
 
+def _load_data(path: str) -> list[dict[str, Any]]:
+    with open(_resolve_path(path), "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError(f"LoCoMo dataset must be a JSON list: {path}")
+    return data
+
+
 def load_locomo_samples(
     path: str, sample_idx: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """Load raw conversation samples (ingest side)."""
-    with open(_resolve_path(path), "r", encoding="utf-8") as f:
-        data = json.load(f)
     samples = []
-    for idx, item in enumerate(data):
+    for idx, item in enumerate(_load_data(path)):
         normalized = dict(item)
         normalized["sample_index"] = idx
         normalized["user_id"] = f"sample_{idx}"
@@ -42,10 +44,8 @@ def load_locomo_qa_list(
     path: str, sample_idx: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """Load QA pairs (eval side); adversarial category 5 excluded (W1-W3 口径)."""
-    with open(_resolve_path(path), "r", encoding="utf-8") as f:
-        data = json.load(f)
     qa_list = []
-    for s_idx, sample in enumerate(data):
+    for s_idx, sample in enumerate(_load_data(path)):
         if sample_idx is not None and s_idx != sample_idx:
             continue
         sample_id = sample.get("sample_id", f"sample_{s_idx}")
@@ -69,7 +69,6 @@ def load_locomo_qa_list(
 def count_samples(data_path: str) -> int:
     """Sample count in the dataset file (0 if unreadable)."""
     try:
-        with open(data_path, "r", encoding="utf-8") as f:
-            return len(json.load(f))
+        return len(_load_data(data_path))
     except Exception:  # noqa: BLE001 - caller falls back to serial ingest
         return 0

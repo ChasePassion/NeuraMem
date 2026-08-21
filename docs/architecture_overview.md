@@ -1,6 +1,6 @@
 # NeuraMem 架构总览（Architecture Overview）
 
-> 生成于 2026-08-19，基于 commit `4b2c6ff` 的代码实态。
+> 生成于 2026-08-19，基于 commit `8469cb6` 及当前工作树的代码实态。
 > 目标读者：新加入的开发者、评审者、以及需要理解全链路的维护者。
 > 目标问题：这个仓库有什么、每个部分干什么、一条数据从写入到被检索增强的完整路径是怎样的。
 
@@ -47,7 +47,7 @@ graph LR
   - `config.py` — 分层配置 `MemoryConfig`：LLM_/EMBEDDING_/STORE_/RETRIEVAL_/LANGFUSE_ 前缀的子配置，构造期校验、错误配置即刻失败
   - `prompts.py` — prompt 资产单一源：episodic 管理 / semantic 提炼 / usage 判断三套模板 + canonical 答题 builder（`build_answer_prompt`，benchmark/server/demo 共用）
   - `core/` — 领域内核（零 IO 依赖）
-    - `models.py` — Pydantic 值对象：`MemoryRecord`（含 retired 墓碑）、`MemoryFilter`、`SearchResult`（闭环 correlation token）、`UsageReport`、`LLMUsage` 等
+    - `models.py` — Pydantic 值对象：`MemoryRecord`（含 retired 墓碑）、`MemoryFilter`、`SearchResult`（闭环 correlation token + transient `RetrievalTrace`）、`UsageReport`、`LLMUsage` 等
     - `ports.py` — 四个端口协议：`LLM` / `Embedder` / `VectorStore` / `Telemetry`（pipeline 唯一可依赖的接口面）
     - `retry.py` — `RetryExecutor`：HTTP 感知的重试分类（408/429/5xx/连接错误），尊重 retry-after，指数退避+去风暴抖动
     - `exceptions.py` — 领域异常：`MilvusConnectionError`、`LLMCallError`、`LLMParseError` 等
@@ -56,7 +56,7 @@ graph LR
     - `semantic.py` — `SemanticWriter`：从 episodic 批量提炼语义事实，并返回被新证据矛盾、需要淘汰的旧语义 id
     - `usage_judge.py` — `UsageJudge`：判断检索出的 episodic 中哪些真的被回答用到（id 协议，失败保守返回空）
     - `narrative.py` — `NarrativeManager`：叙事组簿记——按质心相似度聚类、精确重算质心、删成员/空组清理
-    - `retrieval.py` — `Retriever`：向量检索 + 叙事组扩展（单次批量查询扩组，永久过滤 retired）
+    - `retrieval.py` — `Retriever`：向量检索 + 叙事组扩展（单次批量查询扩组，永久过滤 retired），同时保留 seed/扩展/score/耗时 trace
   - `llm/openai_adapter.py` — `OpenAILLM`：LLM 端口实现；`UsageStats`（contextvars 每题一 scope）、usage 单点解析、JSON 修复重试一次
   - `embed/openai_adapter.py` — `OpenAIEmbedder`：Embedding 端口实现（原生 async，dim 来自配置）
   - `store/` — 向量存储端口实现
@@ -138,7 +138,7 @@ sequenceDiagram
     participant SEM as SemanticWriter
 
     Note over ING,M: per conversation turn (user+assistant pair)
-    ING->>M: manage_async(user_text, assistant_text, user_id, chat_id)
+    ING->>M: manage_async(user_text, assistant_text, user_id, chat_id, metadata=provenance)
     M->>ST: query(episodic of user, limit 10k)
     M->>EPI: manage_memories(turn, candidates)
     EPI->>LLM: complete_json(EPISODIC_MEMORY_MANAGER, label="manage")
@@ -196,10 +196,10 @@ sequenceDiagram
     par semantic branch
         RET->>ST: query(semantic, retired=false, all)
     and episodic seeds
-        RET->>ST: vector search(episodic top-5, retired=false)
+        RET->>ST: vector search(episodic top-5 + score, retired=false)
     end
     RET->>ST: query(group_id in seed groups)  (batched expansion)
-    RET-->>RN: SearchResult (episodic+semantic)
+    RET-->>RN: SearchResult (episodic+semantic+retrieval_trace)
 
     Note over RN,LLM: consumer-owned answer generation
     RN->>LLM: complete(ANSWER_PROMPT + result.render(), label="answer")
@@ -220,7 +220,7 @@ sequenceDiagram
     RN->>LLM: complete_json(JUDGE_PROMPT, label="judge")
 ```
 
-设计要点：`SearchResult` 是纯数据 correlation token，两阶段之间消费者可做任何事；`report_usage_async` 全程失败隔离（judge 失败返回空、异常吞掉告警）——**回写通道永远不能弄断答题路径**；usage judge 用 id 协议而非文本匹配，LLM 改写措辞不再丢分配。runner 还会为每题落一份 trace JSONL（完整 prompt、检索记忆全文、逐证据命中、分段耗时、按 label 的 usage、回写明细），错题归因与性能分析用。
+设计要点：`SearchResult` 是纯数据 correlation token，两阶段之间消费者可做任何事；其中的 transient `retrieval_trace` 记录 seed/expanded/semantic ids、group 扩展、每条命中的 distance/score/source 和耗时，不写回记忆表；`report_usage_async` 全程失败隔离（judge 失败返回空、异常吞掉告警）——**回写通道永远不能弄断答题路径**；usage judge 用 id 协议而非文本匹配，LLM 改写措辞不再丢分配。LoCoMo ingest 通过 `metadata` 写入扁平 `provenance_*` 来源字段，runner 还会为每题落一份 trace JSONL，并同时计算文本 evidence recall 与 provenance recall。
 
 ### 4.3 在线路径：server `/v1/chat`（SSE 流式）
 
@@ -235,7 +235,7 @@ sequenceDiagram
     C->>SRV: POST /v1/chat (user_id, chat_id, message, history)
     SRV->>M: search_async(message, user_id)
     M-->>SRV: SearchResult
-    SRV->>SRV: render(memories [:5]/[:5]) + history[-6:] + message
+    SRV->>SRV: render(all retrieved memories) + history[-6:] + message
     loop stream (SSE)
         SRV->>CL: stream(system_prompt, label="answer")
         CL-->>SRV: token chunks

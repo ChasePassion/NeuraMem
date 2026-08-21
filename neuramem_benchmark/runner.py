@@ -31,8 +31,7 @@ from tqdm import tqdm
 
 import dotenv
 
-from neuramem.config import MemoryConfig
-from neuramem.core.models import MemoryRecord
+from neuramem.core.models import MemoryRecord, RetrievalTrace
 from neuramem.llm.openai_adapter import OpenAILLM, UsageStats
 from neuramem.memory import Memory
 from neuramem.prompts import ANSWER_SYSTEM_PROMPT, extract_final_answer
@@ -40,13 +39,11 @@ from neuramem_benchmark.llm_config import build_benchmark_config
 from neuramem_benchmark.locomo import load_locomo_qa_list, load_locomo_samples
 from neuramem_benchmark.locomo_prompts import (
     get_answer_generation_prompt,
-    get_judge_prompt,
-    JUDGE_SYSTEM_PROMPT,
-    preprocess_answer,
 )
+from neuramem_benchmark.grading import judge_row
 from neuramem_benchmark.metrics import (
-    evidence_recall,
     evidence_recall_detail,
+    provenance_recall_detail,
     resolve_evidence_texts,
 )
 
@@ -65,6 +62,7 @@ QA_FIELDNAMES = [
     "response",
     "evidence",
     "evidence_recall",
+    "provenance_recall",
     "retrieved_count",
     "time_cost",
     "result",
@@ -84,19 +82,44 @@ def _strip_reasoning(raw: str) -> str:
     return extract_final_answer(raw)
 
 
-def _memory_dicts(records: List[MemoryRecord]) -> List[Dict[str, Any]]:
-    """Serializable view of retrieved records for the trace (no vectors)."""
-    return [
-        {
-            "id": m.id,
-            "memory_type": m.memory_type,
-            "text": m.text,
-            "ts": m.ts,
-            "chat_id": m.chat_id,
-            "group_id": m.group_id,
+def _memory_dicts(
+    records: List[MemoryRecord],
+    retrieval_trace: Optional[RetrievalTrace] = None,
+) -> List[Dict[str, Any]]:
+    """Serialize records plus score/provenance details without vectors."""
+    trace_by_id = {}
+    if retrieval_trace is not None:
+        trace_by_id = {
+            hit.memory_id: hit for hit in retrieval_trace.hits
         }
-        for m in records
-    ]
+
+    serialized = []
+    for memory in records:
+        item: Dict[str, Any] = {
+            "id": memory.id,
+            "memory_type": memory.memory_type,
+            "text": memory.text,
+            "ts": memory.ts,
+            "chat_id": memory.chat_id,
+            "group_id": memory.group_id,
+        }
+        provenance = {
+            key: value
+            for key, value in (memory.metadata or {}).items()
+            if key.startswith("provenance_")
+        }
+        if provenance:
+            item["provenance"] = provenance
+        trace_hit = trace_by_id.get(memory.id)
+        if trace_hit is not None:
+            item["retrieval"] = {
+                "distance": trace_hit.distance,
+                "score": trace_hit.score,
+                "is_seed": trace_hit.is_seed,
+                "source": trace_hit.source,
+            }
+        serialized.append(item)
+    return serialized
 
 
 def _parse_evidence_pointers(raw: str) -> List[str]:
@@ -115,48 +138,7 @@ async def judge_response(
     Returns (label, reasoning, raw_response) — raw lands in the trace so
     judge parse fallbacks are auditable.
     """
-    category_num = int(row["category"]) if str(row["category"]).isdigit() else 1
-    gold = preprocess_answer(category_num, row["answer"])
-    prompt = get_judge_prompt(
-        category=category_num,
-        question=row["question"],
-        answer=gold,
-        response=row["response"],
-    )
-    try:
-        resp = await llm.complete(
-            JUDGE_SYSTEM_PROMPT, prompt, call_label="judge"
-        )
-        raw = resp.content or ""
-        clean = raw.strip()
-        if clean.startswith("```"):
-            clean = "\n".join(clean.split("\n")[1:])
-            clean = clean.split("```")[0].strip()
-        think_open = chr(60) + "think" + chr(62)
-        think_close = chr(60) + "/think" + chr(62)
-        if think_open in clean and think_close in clean:
-            clean = clean.split(think_close, 1)[-1].strip()
-        json_start, json_end = clean.find("{"), clean.rfind("}")
-        if json_start != -1 and json_end > json_start:
-            clean = clean[json_start:json_end + 1]
-        try:
-            parsed = json.loads(clean)
-            label = str(parsed.get("label", "")).strip().upper()
-            reasoning = str(parsed.get("reasoning", "")).strip()
-        except json.JSONDecodeError:
-            upper_raw = raw.upper()
-            if '"CORRECT"' in upper_raw or (
-                "CORRECT" in upper_raw and "WRONG" not in upper_raw
-            ):
-                label = "CORRECT"
-            else:
-                label = "WRONG"
-            reasoning = raw[:300]
-    except Exception as e:  # noqa: BLE001 - judge failure scores WRONG
-        return "WRONG", f"Judge call failed: {e}", ""
-    if "CORRECT" in label:
-        return "CORRECT", reasoning, raw
-    return "WRONG", reasoning, raw
+    return await judge_row(llm, row, call_label="judge")
 
 
 async def answer_question(
@@ -183,10 +165,13 @@ async def answer_question(
     start_time = time.time()
     t0 = time.perf_counter()
     timings: Dict[str, int] = {}
+    evidence_pointers = _parse_evidence_pointers(qa_item["evidence"])
 
     with llm.usage_stats.scope():
         episodic: List[MemoryRecord] = []
         semantic: List[MemoryRecord] = []
+        provenance_hits = None
+        provenance_recall_value = None
         if no_memory:
             result = None
             all_memories: List[MemoryRecord] = []
@@ -203,6 +188,14 @@ async def answer_question(
                 [m.text for m in all_memories], evidence_texts
             )
             recall = None if hits is None else any(hits)
+            provenance_hits = provenance_recall_detail(
+                all_memories, evidence_pointers
+            )
+            provenance_recall_value = (
+                None
+                if provenance_hits is None
+                else any(provenance_hits)
+            )
 
         # Phase 2a: answer generation (runner-owned call, label "answer")
         prompt = get_answer_generation_prompt(
@@ -247,6 +240,11 @@ async def answer_question(
             "response": final_answer,
             "evidence": qa_item["evidence"],
             "evidence_recall": "" if recall is None else str(int(recall)),
+            "provenance_recall": (
+                ""
+                if provenance_recall_value is None
+                else str(int(provenance_recall_value))
+            ),
             "retrieved_count": len(all_memories),
             "time_cost": round(time.time() - start_time, 2),
             "result": "",
@@ -266,6 +264,7 @@ async def answer_question(
         total = llm.usage_stats.scope_snapshot()
         answer_s = llm.usage_stats.scope_snapshot("answer")
         usage_judge_s = llm.usage_stats.scope_snapshot("usage_judge")
+        narrative_s = llm.usage_stats.scope_snapshot("narrative")
         judge_s = llm.usage_stats.scope_snapshot("judge")
         row["cache_hit_tokens"] = total["cache_read_tokens"]
         row["cache_prompt_tokens"] = (
@@ -279,15 +278,20 @@ async def answer_question(
             + answer_s["cache_read_tokens"]
             + answer_s["cache_write_tokens"]
         )
-        # memory-system scoped slice: answer + usage_judge (judge excluded)
+        # memory-system scoped slice: answer + usage_judge + narrative
+        # (judge excluded)
         row["memory_cache_hit_tokens"] = (
-            answer_s["cache_read_tokens"] + usage_judge_s["cache_read_tokens"]
+            answer_s["cache_read_tokens"]
+            + usage_judge_s["cache_read_tokens"]
+            + narrative_s["cache_read_tokens"]
         )
         row["memory_cache_prompt_tokens"] = (
             answer_s["input_tokens"] + answer_s["cache_read_tokens"]
             + answer_s["cache_write_tokens"]
             + usage_judge_s["input_tokens"] + usage_judge_s["cache_read_tokens"]
             + usage_judge_s["cache_write_tokens"]
+            + narrative_s["input_tokens"] + narrative_s["cache_read_tokens"]
+            + narrative_s["cache_write_tokens"]
         )
 
         timings["total_ms"] = round((time.perf_counter() - t0) * 1000)
@@ -301,15 +305,32 @@ async def answer_question(
             "question": question,
             "gold_answer": qa_item["answer"],
             "evidence": {
-                "pointers": _parse_evidence_pointers(qa_item["evidence"]),
+                "pointers": evidence_pointers,
                 "texts": evidence_texts,
                 "hits": hits,
                 "recall": None if recall is None else int(recall),
+                "provenance_hits": provenance_hits,
+                "provenance_recall": (
+                    None
+                    if provenance_recall_value is None
+                    else int(provenance_recall_value)
+                ),
             },
             "retrieval": {
                 "retrieved_count": len(all_memories),
-                "episodic": _memory_dicts(episodic),
-                "semantic": _memory_dicts(semantic),
+                "trace": (
+                    None
+                    if result is None
+                    else result.retrieval_trace.model_dump(mode="json")
+                ),
+                "episodic": _memory_dicts(
+                    episodic,
+                    result.retrieval_trace if result is not None else None,
+                ),
+                "semantic": _memory_dicts(
+                    semantic,
+                    result.retrieval_trace if result is not None else None,
+                ),
             },
             "prompt": {
                 "system": ANSWER_SYSTEM_PROMPT,
@@ -320,6 +341,7 @@ async def answer_question(
             "usage": {
                 "answer": answer_s,
                 "usage_judge": usage_judge_s,
+                "narrative": narrative_s,
                 "judge": judge_s,
             },
             "usage_report": usage_report_trace,

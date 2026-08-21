@@ -9,9 +9,13 @@ pointers are skipped rather than guessed.
 """
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 _EVIDENCE_POINTER = re.compile(r"^D(\d+):(\d+)$")
+_PROVENANCE_POINTER = re.compile(
+    r"^D(?P<start_session>\d+):(?P<start_turn>\d+)"
+    r"(?:-D(?P<end_session>\d+):(?P<end_turn>\d+))?$"
+)
 
 # evidence utterances shorter than this are too generic to substring-match
 _MIN_EVIDENCE_LEN = 8
@@ -69,6 +73,80 @@ def evidence_recall(
 ) -> Optional[bool]:
     """True when at least one evidence utterance appears in the retrieved set."""
     detail = evidence_recall_detail(retrieved_texts, evidence_texts)
+    if detail is None:
+        return None
+    return any(detail)
+
+
+def _expand_provenance_pointer(value: Any) -> set[str]:
+    match = _PROVENANCE_POINTER.match(str(value).strip())
+    if not match:
+        return set()
+    start_session = int(match.group("start_session"))
+    start_turn = int(match.group("start_turn"))
+    end_session = int(match.group("end_session") or start_session)
+    end_turn = int(match.group("end_turn") or start_turn)
+    if start_session != end_session:
+        return {
+            f"D{start_session}:{start_turn}",
+            f"D{end_session}:{end_turn}",
+        }
+    return {
+        f"D{start_session}:{turn}"
+        for turn in range(start_turn, end_turn + 1)
+    }
+
+
+def _record_provenance_pointers(record: Any) -> set[str]:
+    metadata = getattr(record, "metadata", None)
+    if not isinstance(metadata, dict):
+        return set()
+    pointers = _expand_provenance_pointer(metadata.get("provenance_pointer"))
+    if pointers:
+        return pointers
+
+    session = metadata.get("provenance_session")
+    start = metadata.get("provenance_turn_start")
+    end = metadata.get("provenance_turn_end", start)
+    try:
+        start_pointer = f"D{int(session)}:{int(start)}"
+        end_pointer = f"D{int(session)}:{int(end)}"
+    except (TypeError, ValueError):
+        return set()
+    return _expand_provenance_pointer(
+        start_pointer if start_pointer == end_pointer
+        else f"{start_pointer}-{end_pointer}"
+    )
+
+
+def provenance_recall_detail(
+    retrieved_records: Sequence[Any], evidence_pointers: Sequence[Any]
+) -> Optional[List[bool]]:
+    """Match evidence pointers against persisted record provenance.
+
+    Returns None when the evaluated records carry no provenance metadata, so
+    old stores are not incorrectly reported as provenance misses.
+    """
+    normalized_evidence = [
+        str(pointer).strip()
+        for pointer in evidence_pointers or []
+        if _EVIDENCE_POINTER.match(str(pointer).strip())
+    ]
+    if not normalized_evidence:
+        return None
+    retrieved_pointers = set()
+    for record in retrieved_records:
+        retrieved_pointers.update(_record_provenance_pointers(record))
+    if not retrieved_pointers:
+        return None
+    return [pointer in retrieved_pointers for pointer in normalized_evidence]
+
+
+def provenance_recall(
+    retrieved_records: Sequence[Any], evidence_pointers: Sequence[Any]
+) -> Optional[bool]:
+    """True when at least one evidence pointer was retrieved by source."""
+    detail = provenance_recall_detail(retrieved_records, evidence_pointers)
     if detail is None:
         return None
     return any(detail)

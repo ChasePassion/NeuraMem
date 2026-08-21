@@ -1,7 +1,5 @@
 """Unit tests for the migrated benchmark pipeline (step 5, no LLM/Milvus)."""
 
-import json
-
 import pytest
 
 from neuramem_benchmark.llm_config import apply_minimax_primary
@@ -9,6 +7,7 @@ from neuramem_benchmark.locomo import count_samples, load_locomo_qa_list, load_l
 from neuramem_benchmark.metrics import (
     evidence_recall,
     evidence_recall_detail,
+    provenance_recall_detail,
     resolve_evidence_texts,
 )
 
@@ -95,6 +94,29 @@ class TestEvidenceMetrics:
                 "pointer rule may not match this dataset build"
             )
 
+    def test_provenance_recall_matches_turn_ranges(self):
+        from neuramem.core.models import MemoryRecord
+
+        records = [
+            MemoryRecord(
+                id=1,
+                metadata={
+                    "provenance_pointer": "D1:1-D1:2",
+                },
+            )
+        ]
+        assert provenance_recall_detail(records, ["D1:1", "D1:3"]) == [
+            True,
+            False,
+        ]
+
+    def test_provenance_recall_is_unknown_without_metadata(self):
+        from neuramem.core.models import MemoryRecord
+
+        assert provenance_recall_detail(
+            [MemoryRecord(id=1)], ["D1:1"]
+        ) is None
+
 
 class TestLLMConfig:
     def test_minimax_applied_with_key(self, monkeypatch):
@@ -166,3 +188,64 @@ class TestTraceHelpers:
         assert _parse_evidence_pointers("") == []
         assert _parse_evidence_pointers("not json") == []
         assert _parse_evidence_pointers('{"a": 1}') == []
+
+    def test_memory_dicts_include_provenance_and_retrieval_details(self):
+        from neuramem_benchmark.runner import _memory_dicts
+        from neuramem.core.models import (
+            MemoryRecord,
+            RetrievalTrace,
+            RetrievalTraceHit,
+        )
+
+        record = MemoryRecord(
+            id=7,
+            memory_type="episodic",
+            text="hello",
+            metadata={"provenance_pointer": "D1:1-D1:2", "private": "hidden"},
+        )
+        trace = RetrievalTrace(
+            hits=[
+                RetrievalTraceHit(
+                    memory_id=7,
+                    memory_type="episodic",
+                    distance=0.1,
+                    score=0.9,
+                    is_seed=True,
+                    source="episodic_seed",
+                )
+            ]
+        )
+
+        assert _memory_dicts([record], trace) == [
+            {
+                "id": 7,
+                "memory_type": "episodic",
+                "text": "hello",
+                "ts": 0,
+                "chat_id": "",
+                "group_id": -1,
+                "provenance": {"provenance_pointer": "D1:1-D1:2"},
+                "retrieval": {
+                    "distance": 0.1,
+                    "score": 0.9,
+                    "is_seed": True,
+                    "source": "episodic_seed",
+                },
+            }
+        ]
+
+    def test_build_provenance_metadata_uses_one_based_pointers(self):
+        from neuramem_benchmark.ingest import _build_provenance_metadata
+
+        metadata = _build_provenance_metadata(
+            "sample_a", "session_3", "2023-05-07", 0, 1
+        )
+        assert metadata == {
+            "provenance_source": "locomo",
+            "provenance_sample_id": "sample_a",
+            "provenance_session": 3,
+            "provenance_turn_start": 1,
+            "provenance_turn_end": 2,
+            "provenance_pointer": "D3:1-D3:2",
+            "provenance_date_time": "2023-05-07",
+        }

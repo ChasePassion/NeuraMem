@@ -9,6 +9,8 @@ from neuramem.config import MemoryConfig
 from neuramem.core.models import (
     ConsolidationStats,
     MemoryRecord,
+    RetrievalTrace,
+    RetrievalTraceHit,
     SearchResult,
     UsageReport,
 )
@@ -21,6 +23,8 @@ __all__ = [
     "Memory",
     "MemoryConfig",
     "MemoryRecord",
+    "RetrievalTrace",
+    "RetrievalTraceHit",
     "SearchResult",
     "UsageReport",
     "__version__",

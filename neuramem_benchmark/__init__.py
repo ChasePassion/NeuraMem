@@ -1,8 +1,12 @@
-"""neuramem_benchmark — LoCoMo evaluation pipeline (repo-local, not packaged).
+"""LoCoMo benchmark pipeline.
 
-Restructured from benchmark/locomo per implementation plan step 5
-("重组而非重写"): locomo data loading, ingest replay with completeness
-manifests, two-phase eval runner, recall@k metrics, judge/rejudge tools,
-report generation, one-click orchestration. RUN_RECORD.md moves with it
-(W numbering continuity preserved).
+Public command modules:
+
+* ``ingest``: replay conversation data and write a completeness manifest.
+* ``runner``: evaluate QA rows and write CSV plus trace JSONL.
+* ``report``: summarize one evaluation CSV.
+* ``scorecard``: aggregate per-sample run directories and verify trace ids.
+* ``run_benchmark``: cross-platform one-shot orchestration.
+
+The Windows resumable workflow lives in ``scripts/locomo_batch.ps1``.
 """

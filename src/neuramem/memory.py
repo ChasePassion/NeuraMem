@@ -62,7 +62,9 @@ class Memory:
         self._episodic = EpisodicManager(self._llm)
         self._semantic = SemanticWriter(self._llm)
         self._usage_judge = UsageJudge(self._llm)
-        self._narrative = NarrativeManager(self._store, self._config.retrieval)
+        self._narrative = NarrativeManager(
+            self._store, self._config.retrieval, self._llm
+        )
         self._ready = False
 
         logger.info(
@@ -130,7 +132,7 @@ class Memory:
                 assignments: dict[int, int] = {}
                 if used_ids:
                     assignments = await self._narrative.assign_to_narrative_group(
-                        used_ids, result.user_id
+                        used_ids, result.user_id, records=result.episodic
                     )
                 span.set_attributes(
                     {

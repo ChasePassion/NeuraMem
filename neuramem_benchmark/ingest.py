@@ -23,7 +23,6 @@ from tqdm import tqdm
 
 import dotenv
 
-from neuramem.config import MemoryConfig
 from neuramem.core.models import MemoryFilter
 from neuramem.llm.openai_adapter import OpenAILLM
 from neuramem.memory import Memory
@@ -44,6 +43,31 @@ def _format_msg(msg: Any) -> str:
         text = msg.get("text", "")
         return f"{speaker}: {text}"
     return str(msg)
+
+
+def _build_provenance_metadata(
+    sample_name: str,
+    session_key: str,
+    date_time: Any,
+    turn_start: int,
+    turn_end: int,
+) -> Dict[str, Any]:
+    """Build flat metadata that can survive Milvus dynamic-field storage."""
+    session_number = int(session_key.split("_", 1)[1])
+    start_pointer = f"D{session_number}:{turn_start + 1}"
+    end_pointer = f"D{session_number}:{turn_end + 1}"
+    pointer = start_pointer if start_pointer == end_pointer else (
+        f"{start_pointer}-{end_pointer}"
+    )
+    return {
+        "provenance_source": "locomo",
+        "provenance_sample_id": sample_name,
+        "provenance_session": session_number,
+        "provenance_turn_start": turn_start + 1,
+        "provenance_turn_end": turn_end + 1,
+        "provenance_pointer": pointer,
+        "provenance_date_time": str(date_time or ""),
+    }
 
 
 async def _run_consolidation(memory: Memory, user_id: str, sample_name: str) -> None:
@@ -98,19 +122,29 @@ async def import_sample(
 
         i = 0
         while i < len(messages):
+            turn_start = i
             user_text = prefix + _format_msg(messages[i])
             if i + 1 < len(messages):
                 assistant_text = _format_msg(messages[i + 1])
-                i += 2
+                turn_end = i + 1
             else:
                 assistant_text = "(No reply)"
-                i += 1
+                turn_end = i
+            i = turn_end + 1
+            provenance = _build_provenance_metadata(
+                sample_name=sample_name,
+                session_key=s_key,
+                date_time=date_time,
+                turn_start=turn_start,
+                turn_end=turn_end,
+            )
             try:
                 added_ids = await memory.manage_async(
                     user_text=user_text,
                     assistant_text=assistant_text,
                     user_id=user_id,
                     chat_id=s_key,
+                    metadata=provenance,
                 )
             except Exception as e:  # noqa: BLE001 - per-turn isolation (#22)
                 failed_turns += 1

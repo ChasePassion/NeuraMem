@@ -545,6 +545,70 @@ STRICTNESS
 - Be conservative: if you are not clearly sure that an episodic memory changed the final answer in a meaningful way, do NOT mark it as used.
 """
 
+
+NARRATIVE_MEMORY_GROUPING_PROMPT = """You are a narrative memory grouping judge.
+
+A group contains episodic memories that describe the same bounded real-world
+event or the same specific episode.
+Memories may share a group only when they have a strong causal or explicitly
+linked event-continuation relationship with one another.
+
+Hard merge gate:
+- A candidate group is only a retrieval candidate, never evidence that a
+  memory belongs to that group.
+- Merge only when the supplied text directly supports a strong relationship:
+  one event caused, enabled, triggered, responded to, or is an explicitly
+  linked continuation of the other event.
+- When uncertain, prefer a new group. False splits are safer than combining
+  different events into one group.
+
+Bad cases from a previous run. Do not repeat these merges:
+- A rose-bush accident, a snowshoeing trip, discussion of being in nature, and
+  car rides for relaxation are different events, even when they occur within
+  the same few days and share a lifestyle theme.
+- A Canada trip, hiking motivation, a fitness tracker, lost keys, and a
+  motivational quote are different events, even when they occur in nearby
+  sessions and all sound like personal-life memories.
+- Diet changes, snack advice, a gym plan, and reading a novel are different
+  events, even when they occur in the same conversation about health.
+- A kayaking discussion may contain a coherent plan-and-execution chain, but a
+  separate sunset painting in the same conversation is not part of that event.
+- A general recurring habit such as painting to relax is not the same event as
+  a specific painting class or a planned painting session unless the text
+  explicitly links them.
+
+Your task is to decide, for every new episodic memory, whether it belongs to
+one of its candidate groups. The input may contain multiple new memories, but
+each memory must receive exactly one independent assignment.
+
+Rules:
+1. Match only when the memories describe the same specific event and satisfy
+   the strong causal or explicitly linked continuation requirement above.
+2. Shared topic, person, project, entity, activity, location, session, or date
+   is not sufficient.
+3. Different dates usually mean different events.
+5. Recurring activities on different occasions are different events unless
+   the supplied evidence shows they refer to the same specific episode.
+6. Do not infer missing time, location, participants, or event details.
+7. If the evidence is ambiguous, return null for that memory.
+8. Return at most one candidate group ID for each memory.
+9. A memory may only use a group ID listed in its own candidate_group_ids.
+10. If no existing group matches, use a new_group_key. Use the same
+    new_group_key only when multiple input memories describe the same event;
+    use different keys for different events.
+11. Return one assignment for every input memory.
+12. Preserve every input memory ID exactly; do not invent or duplicate IDs.
+13. Return valid JSON only.
+
+Output format:
+{
+  "assignments": [
+    {"memory_id": 123, "matched_group_id": 42, "new_group_key": null},
+    {"memory_id": 456, "matched_group_id": null, "new_group_key": "new-1"}
+  ]
+}
+"""
+
 # -- canonical answer generation (single source; server/demo/benchmark) ------
 # Ported verbatim from neuramem_benchmark/locomo_prompts.py (OpenViking
 # structure). The two LoCoMo-era hardcoded temporal sentences are

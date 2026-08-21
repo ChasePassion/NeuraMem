@@ -19,9 +19,9 @@
 | 8 | clients/llm.py: _normalize_terminal_error / _extract_auth_error_detail | 错误归一化 + 认证错误识别 | 6.3 结构化错误（status/headers/body + AuthenticationError 子类） | 待办 |
 | 9 | exceptions.py: LLMAuthenticationError | 认证失败专属异常（model/provider/original_error） | 6.3 结构化异常子类 | 待办 |
 | 10 | memory.py: judge_and_assign_narrative_group_async | 再巩固闭环：judge → assign，fire-and-forget 安全（never raises、best-effort 返回 used_ids） | pipeline 标准编排（调整表 #14）；run_blocking 换成原生 async | 待办 |
-| 11 | memory.py: MemoryRetrievalTrace | 检索 provenance：query_fingerprint / seed_ids / expanded_ids / semantic_ids / distances / is_seed / 耗时 / trace_status（不推断、不填零） | retrieval 组件返回结构 + 7.4 评测 span 数据源 | 待办 |
-| 12 | memory.py: search_with_trace | 带 trace 的检索入口（生产可选，评测必需） | retrieval.search(..., trace=...) | 待办 |
-| 13 | memory.py: MemoryRecord 扩展字段 distance / is_seed / source_turn_id | 检索命中距离、种子标记、来源 turn（评测 provenance） | core/models.py MemoryRecord 可选字段 | 待办 |
+| 11 | memory.py: MemoryRetrievalTrace | 检索 provenance：query_fingerprint / seed_ids / expanded_ids / semantic_ids / distances / is_seed / 耗时 / trace_status（不推断、不填零） | `core/models.py: RetrievalTrace` + `RetrievalTraceHit`；`SearchResult` 始终携带 transient trace | 已完成（字段名按当前 API 收敛） |
+| 12 | memory.py: search_with_trace | 带 trace 的检索入口（生产可选，评测必需） | `search_async` 默认生成 `SearchResult.retrieval_trace`，无需第二个入口 | 已完成（不另设入口） |
+| 13 | memory.py: MemoryRecord 扩展字段 distance / is_seed / source_turn_id | 检索命中距离、种子标记、来源 turn（评测 provenance） | score/distance/is_seed/source 进入 transient `RetrievalTraceHit`；来源 turn 走 `metadata.provenance_*`，不污染通用 `MemoryRecord` | 已完成（采用通用机制） |
 | 14 | memory.py: ConsolidationStats 扩展（physical_before/after、logical_before/after、action_counts、duration_ms、batch_fingerprint） | 增量合并 + 冲突淘汰的统计基线（before/after 对比） | 调整表 #20 的统计形态 | 待办 |
 | 15 | processors/memory_usage_judge.py: MemoryUsageTrace + judge_used_memory_ids（返回 ids 而非 texts）+ trace_sink 回调 | judge 判定溯源（retrieved → used 映射、judge_status，评测钩子） | pipeline/usage_judge.py（#14）+ 7.4 评测 | 待办 |
 | 16 | processors/narrative_memory_manager.py: cleanup_group | 组清理独立方法（供删除/更新时复用） | pipeline/narrative.py | 待办 |

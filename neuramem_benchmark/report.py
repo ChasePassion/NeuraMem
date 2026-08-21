@@ -24,7 +24,7 @@ CATEGORY_NAMES = {
     "5": "adversarial",
 }
 
-csv.field_size_limit(sys.maxsize)
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 
 
 def category_label(category: str) -> str:
@@ -62,9 +62,9 @@ def _rate(prompt: float, hit: float) -> float | None:
 def load_ingest_usage(usage_dir: str) -> tuple[dict, dict, list[str]]:
     """Load ingest-phase memory-system usage from usage JSON files.
 
-    Reads result/ingest_usage_stats*.json written by import_to_neuramem.py
-    (serial run writes one file, parallel sample subprocesses write one per
-    sample). Returns (merged manage usage, merged consolidate usage, files).
+    Reads ingest_usage_stats*.json written by ingest.py. A serial run writes
+    one file, while per-sample workers write one file per sample. Returns
+    (merged manage usage, merged consolidate usage, files).
     """
     manage_usage: dict = {}
     consolidate_usage: dict = {}
@@ -178,9 +178,9 @@ def main():
     cache_rate = _rate(cache_prompt_tokens, cache_hit_tokens)
     # Memory-system components (judge is an eval tool, excluded):
     # - manage / consolidate: ingest phase, from the usage JSON files
-    # - usage_judge / answer: eval phase, from the QA CSV (CSV stores the
-    #   combined usage_judge+answer slice plus the answer-only slice, so the
-    #   usage_judge slice is the difference)
+    # - usage_judge + narrative / answer: eval phase, from the QA CSV (CSV
+    #   stores the combined usage_judge+narrative+answer slice plus the
+    #   answer-only slice, so the auxiliary memory slice is the difference)
     ingest_usage, consolidate_usage, ingest_files = load_ingest_usage(args.ingest_usage_dir)
     component_manage = _prompt_of(ingest_usage), ingest_usage["cache_read_tokens"]
     component_consolidate = (
@@ -228,13 +228,13 @@ def main():
         "KV Cache (Prefix Cache) Usage:",
         "Memory System Hit Rate        : "
         + (f"{memory_system_rate:.2%}" if memory_system_rate is not None else "n/a")
-        + "  (manage + consolidate + usage_judge + answer; judge excluded)",
+        + "  (manage + consolidate + usage_judge + narrative + answer; judge excluded)",
         _component_line("manage", *component_manage)
         + f"  [{int(ingest_usage['calls'])} calls, "
         + (f"{len(ingest_files)} file(s)]" if ingest_files else "no usage file]"),
         _component_line("consolidate", *component_consolidate)
         + f"  [{int(consolidate_usage['calls'])} calls]",
-        _component_line("usage_judge", *component_usage_judge),
+        _component_line("usage_judge+narrative", *component_usage_judge),
         _component_line("answer", *component_answer),
         f"  Memory System Hit / Prompt  : {int(memory_system_hit)} / {int(memory_system_prompt)}",
         "Judge (eval tool, excluded)   : "

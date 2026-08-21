@@ -15,12 +15,8 @@ from tqdm import tqdm
 import dotenv
 
 from neuramem.llm.openai_adapter import OpenAILLM
+from neuramem_benchmark.grading import judge_row
 from neuramem_benchmark.llm_config import build_benchmark_config
-from neuramem_benchmark.locomo_prompts import (
-    get_judge_prompt,
-    JUDGE_SYSTEM_PROMPT,
-    preprocess_answer,
-)
 
 dotenv.load_dotenv(".env")
 
@@ -41,7 +37,13 @@ async def run(args) -> None:
     config = build_benchmark_config()
     llm = OpenAILLM(config.llm)
 
-    to_grade = [i for i, r in enumerate(rows) if args.force or not r.get("result")]
+    to_grade = [
+        i
+        for i, row in enumerate(rows)
+        if args.force
+        or not row.get("result")
+        or (getattr(args, "include_wrong", False) and row.get("result") == "WRONG")
+    ]
     logger.info("Total rows: %d, to grade: %d", len(rows), len(to_grade))
 
     write_lock = asyncio.Lock()
@@ -50,30 +52,7 @@ async def run(args) -> None:
     async def grade_row(idx: int):
         row = rows[idx]
         async with semaphore:
-            category_num = (
-                int(row.get("category", "1"))
-                if str(row.get("category", "")).isdigit()
-                else 1
-            )
-            gold = preprocess_answer(category_num, row.get("answer", ""))
-            prompt = get_judge_prompt(
-                category=category_num,
-                question=row.get("question", ""),
-                answer=gold,
-                response=row.get("response", ""),
-            )
-            res = await llm.complete_json(
-                system_prompt=JUDGE_SYSTEM_PROMPT,
-                user_message=prompt,
-                default={"label": "WRONG", "reasoning": "Judge failed"},
-            )
-            data = res.parsed_data or {}
-            row["result"] = (
-                "CORRECT"
-                if "CORRECT" in str(data.get("label", "")).upper()
-                else "WRONG"
-            )
-            row["reasoning"] = str(data.get("reasoning", ""))
+            row["result"], row["reasoning"], _ = await judge_row(llm, row)
         async with write_lock:
             with open(args.input, "w", encoding="utf-8", newline="") as fp:
                 writer = csv.DictWriter(fp, fieldnames=fieldnames)
@@ -84,12 +63,21 @@ async def run(args) -> None:
     logger.info("Judging complete!")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Judge ungraded responses in LoCoMo CSV")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Judge responses in a LoCoMo CSV")
     parser.add_argument("--input", default="result/locomo_neuramem_results.csv")
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--force", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--include-wrong",
+        action="store_true",
+        help="Also re-judge rows currently labeled WRONG",
+    )
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
     asyncio.run(run(args))
 
 

@@ -116,6 +116,35 @@ def _judge_hangzhou_script(payload):
     return {"used_episodic_memory_ids": ids}
 
 
+def _narrative_hangzhou_script(payload):
+    assignments = []
+    for item in payload["new_memories"]:
+        new_text = item["memory"]["text"].lower()
+        matched_group_id = None
+        if "hangzhou" in new_text:
+            for candidate in payload["candidate_groups"]:
+                candidate_text = " ".join(
+                    memory["text"]
+                    for memory in candidate["episodic_memories"]
+                ).lower()
+                if (
+                    candidate["group_id"] in item["candidate_group_ids"]
+                    and "hangzhou" in candidate_text
+                ):
+                    matched_group_id = candidate["group_id"]
+                    break
+        assignments.append({
+            "memory_id": item["memory"]["id"],
+            "matched_group_id": matched_group_id,
+            "new_group_key": (
+                None
+                if matched_group_id is not None
+                else "hangzhou" if "hangzhou" in new_text else "memory"
+            ),
+        })
+    return {"assignments": assignments}
+
+
 class TestManage:
     @pytest.mark.asyncio
     async def test_manage_adds_with_metadata_passthrough(self):
@@ -174,6 +203,7 @@ class TestManage:
         llm = ScriptedLLM()
         llm.on_json("manage", _default_manage_script)
         llm.on_json("usage_judge", _judge_hangzhou_script)
+        llm.on_json("narrative", _narrative_hangzhou_script)
         store = InMemoryStore()
         memory = _make_memory(llm=llm, store=store, k_episodic=5)
         await memory.manage_async("I went to Hangzhou last week.", "nice", "u1", "c1")
@@ -181,11 +211,6 @@ class TestManage:
         await memory.report_usage_async(result, "You visited Hangzhou!")
         groups = await store.list_groups("u1")
         assert len(groups) == 1 and groups[0].size == 2
-
-        hangzhou = [
-            r for r in await store.query(MemoryFilter(user_id="u1", memory_type="episodic"))
-            if "Hangzhou" in r.text
-        ]
 
         def update_first(payload):
             target = payload["episodic_memories"][0]
@@ -212,6 +237,7 @@ class TestSearchAndClosedLoop:
         llm = ScriptedLLM()
         llm.on_json("manage", _default_manage_script)
         llm.on_json("usage_judge", _judge_hangzhou_script)
+        llm.on_json("narrative", _narrative_hangzhou_script)
         store = InMemoryStore()
 
         wide = _make_memory(llm=llm, store=store, k_episodic=5)
@@ -239,6 +265,16 @@ class TestSearchAndClosedLoop:
             "The user visited Hangzhou on a business trip.",
             "The user enjoyed the West Lake in Hangzhou.",
         }
+        trace = expanded.retrieval_trace
+        assert len(trace.seed_ids) == 1
+        assert len(trace.expanded_ids) == 1
+        assert trace.expanded_group_ids
+        trace_by_id = {hit.memory_id: hit for hit in trace.hits}
+        assert trace_by_id[trace.seed_ids[0]].is_seed is True
+        assert trace_by_id[trace.expanded_ids[0]].source == (
+            "episodic_group_expansion"
+        )
+        assert trace_by_id[trace.seed_ids[0]].score is not None
 
     @pytest.mark.asyncio
     async def test_search_result_render_reflects_content(self):
@@ -374,6 +410,7 @@ class TestDeleteAndReset:
         llm = ScriptedLLM()
         llm.on_json("manage", _default_manage_script)
         llm.on_json("usage_judge", _judge_hangzhou_script)
+        llm.on_json("narrative", _narrative_hangzhou_script)
         store = InMemoryStore()
         memory = _make_memory(llm=llm, store=store, k_episodic=5)
         await memory.manage_async("I went to Hangzhou last week.", "nice", "u1", "c1")
@@ -397,6 +434,7 @@ class TestDeleteAndReset:
         llm = ScriptedLLM()
         llm.on_json("manage", _default_manage_script)
         llm.on_json("usage_judge", _judge_hangzhou_script)
+        llm.on_json("narrative", _narrative_hangzhou_script)
         store = InMemoryStore()
         memory = _make_memory(llm=llm, store=store, k_episodic=1)
         await memory.manage_async("I went to Hangzhou last week.", "nice", "u1", "c1")

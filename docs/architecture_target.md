@@ -462,6 +462,7 @@ memory = Memory(config, telemetry=InMemoryTelemetry())
 - **为什么缺了它必然侵入**：第三方需要带自己的持久化字段（parlasoul 的 character_id 在 memory.py 出现 83 处、污染每个方法签名）——没有透传通道，业务字段只能硬编码进库的实体构造和 filter 构建
 - **落地**：metadata 展开写入 Milvus 动态字段（enable_dynamic_field=True 已具备，零迁移）；filter 为结构化 dict，由 store 安全编译成表达式（顺带消除字符串拼接注入风险）
 - **边界**：metadata 字段只做过滤圈定，不参与向量相似度；字段语义的解释权归调用方
+- **评测 provenance**：LoCoMo ingest 通过同一 metadata 通道写入扁平 `provenance_*` 字段（sample/session/turn/date/pointer）；benchmark 根据这些字段计算来源指针 recall，旧数据没有 provenance 时结果保持 unknown，不伪造 miss
 
 ### 8.3 配置化（行为参数化）——缺了它，调行为 = 改代码
 
@@ -564,11 +565,32 @@ memory = Memory(config, telemetry=InMemoryTelemetry())
 
 ```python
 # core/models.py
+class RetrievalTraceHit(BaseModel):
+    memory_id: int
+    memory_type: str
+    group_id: int
+    distance: float | None
+    score: float | None
+    is_seed: bool
+    source: str
+
+
+class RetrievalTrace(BaseModel):
+    status: str
+    elapsed_ms: int | None
+    seed_ids: list[int]
+    expanded_ids: list[int]
+    semantic_ids: list[int]
+    expanded_group_ids: list[int]
+    hits: list[RetrievalTraceHit]
+
+
 class SearchResult(BaseModel):
     query: str
     user_id: str
     episodic: list[MemoryRecord]
     semantic: list[MemoryRecord]
+    retrieval_trace: RetrievalTrace
 
     def render(self, max_episodic: int | None = None, max_semantic: int | None = None) -> str:
         """Format the memory block for an answer prompt (pure, no IO).
@@ -593,6 +615,7 @@ report = await memory.report_usage_async(result, answer)  # judge -> assign, clo
 ### 11.2 设计要点
 
 - **render() 只格式化记忆块**（编号 episodic/semantic 列表，收编现状 chat.py 与 demo 的重复段）；历史消息与用户消息**不进 render**——历史是消费者会话状态（服务端请求体 / demo 内存 / benchmark 数据集）。#12 去重边界的精确定义：**库消除"记忆相关"的重复，不消除"调 LLM"的重复**
+- **retrieval_trace 是 transient correlation data**：`SearchResult` 额外携带 seed/expanded/semantic ids、group 扩展集合、每条命中的 distance/score/source 和检索耗时；它服务评测与诊断，不进入 `MemoryRecord` 持久化，也不改变 REST response schema
 - **render() 默认不截断**：W3 口径下 semantic 是全量返回（USE_ALL_SEMANTIC=true），现状 server chat.py 的 `[:5]` 截断与检索配置互相打架（检索侧刻意全量、拼 prompt 侧丢弃）。目标接口单一职责——**数量由检索配置决定，render 只负责格式化**，默认渲染 search 返回的全部；server 维持现状需显式传参（`render(max_episodic=5, max_semantic=5)`）。这同时保证 benchmark 接入新 API 后不改变 W3 的注入行为（semantic 全量进 prompt），W4 vs W3 对比口径不被污染
 - **report_usage_async 是薄编排**（Facade 只做编排）：空候选直接返回空 report 不发 LLM；judge 异常吞掉返回空 report（对齐现状保守降级——回写通道绝不能打断消费者的回答路径）；可安全重复调用，不承诺去重
 - **judge 协议 text→id**：候选记忆带 id 进 prompt，返回 `used_episodic_memory_ids: [1, 3, 7]`（id 数组形态的稳定性已被 W3 验证——memory_manager 为 MiniMax-M3 的 bare-id delete 做的兼容是同一教训）。行为变更，W4 验证

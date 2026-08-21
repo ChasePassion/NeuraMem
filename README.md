@@ -21,14 +21,27 @@ NeuraMem 是一个基于神经科学和记忆模型的人工智能记忆系统�
 
 ## 评测结果 (Benchmark Results)
 
-NeuraMem 在 [LoCoMo](https://github.com/snap-stanford/locomo) 长对话记忆基准上的评测结果（排除 adversarial 类题目）：**65.97%**（1540 题，MiniMax-M3 全链路）
+NeuraMem 在 [LoCoMo](https://github.com/snap-stanford/locomo) 长对话记忆基准上的当前稳定 ID 重跑结果（排除 category 5 adversarial 题目）为：**66.82%**（1029/1540，MiniMax-M3 全链路）。10 个 sample 全部完成，trace-to-store 的幽灵 ID 校验均为 `0`；s8 有 1 个 ingest turn 被跳过。
 
-工作流定义、历史成绩、评测口径与复现命令详见 [neuramem_benchmark/RUN_RECORD.md](neuramem_benchmark/RUN_RECORD.md)。
+当前结果、benchmark 模块职责、目录结构和复现命令详见 [docs/benchmark.md](docs/benchmark.md)；W1-W4 历史记录详见 [neuramem_benchmark/RUN_RECORD.md](neuramem_benchmark/RUN_RECORD.md)。
 
 一键复现：
 
 ```bash
 python -m neuramem_benchmark.run_benchmark --all-samples --threads 10 --ingest-parallel 4 --output result/locomo_neuramem_all_results.csv
+```
+
+Windows 下需要可恢复、按 sample 运行时，使用 `scripts/locomo_batch.ps1`；完成后用 `python -m neuramem_benchmark.scorecard --root result/locomo_full_rerun` 汇总结果。
+
+## 项目结构 (Project Layout)
+
+```text
+src/neuramem/              Core memory library
+neuramem_benchmark/        LoCoMo data, ingest, eval, reports, scorecard
+scripts/                   Windows batch runner and maintenance utilities
+docs/                      Architecture and benchmark guides
+result/                    Ignored benchmark outputs and historical artifacts
+tests/                     Unit and integration tests
 ```
 
 ## 功能实现 (Feature Implementation)
@@ -67,7 +80,7 @@ python -m neuramem_benchmark.run_benchmark --all-samples --threads 10 --ingest-p
 
 2.  安装依赖：
     ```bash
-    pip install -r requirements.txt
+    pip install -e ".[benchmark]"
     ```
 
 ### 配置 (Configuration)

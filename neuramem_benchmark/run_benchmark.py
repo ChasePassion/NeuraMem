@@ -1,9 +1,7 @@
-"""One-click LoCoMo pipeline: Ingest -> QA Eval + Judge -> Report.
+"""Cross-platform one-shot LoCoMo pipeline: ingest, evaluate, and report.
 
-Subprocess orchestration ported from benchmark/locomo/run_benchmark.py;
-PYTHON_EXEC is no longer a hardcoded local path (env BENCHMARK_PYTHON or
-sys.executable), and module invocations use -m neuramem_benchmark.*.
-Run from the repository root.
+Use ``scripts/locomo_batch.ps1`` when a Windows run needs resumable,
+per-sample process supervision instead of one combined output file.
 """
 
 import argparse
@@ -11,7 +9,6 @@ import logging
 import os
 import subprocess
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from neuramem_benchmark.locomo import count_samples

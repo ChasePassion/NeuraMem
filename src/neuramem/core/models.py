@@ -67,6 +67,9 @@ class SearchHit(BaseModel):
 
     record: MemoryRecord
     distance: Optional[float] = None
+    # Higher-is-better ranking value when the adapter can provide one. The
+    # legacy distance field remains unchanged for adapter compatibility.
+    score: Optional[float] = None
 
 
 class LLMUsage(BaseModel):
@@ -105,6 +108,36 @@ class LLMUsage(BaseModel):
         return self.cache_read_tokens / prompt
 
 
+class RetrievalTraceHit(BaseModel):
+    """One memory observed during a retrieval operation."""
+
+    memory_id: int
+    memory_type: str
+    group_id: int = -1
+    distance: Optional[float] = None
+    score: Optional[float] = None
+    is_seed: bool = False
+    source: str
+
+
+class RetrievalTrace(BaseModel):
+    """Structured retrieval diagnostics carried with a SearchResult.
+
+    This is intentionally transient: scores and expansion decisions describe
+    one search and are not persisted as memory fields.
+    """
+
+    status: Literal["ok", "empty_embedding"] = "ok"
+    elapsed_ms: Optional[int] = None
+    episodic_limit: Optional[int] = None
+    semantic_limit: Optional[int] = None
+    seed_ids: list[int] = Field(default_factory=list)
+    expanded_ids: list[int] = Field(default_factory=list)
+    semantic_ids: list[int] = Field(default_factory=list)
+    expanded_group_ids: list[int] = Field(default_factory=list)
+    hits: list[RetrievalTraceHit] = Field(default_factory=list)
+
+
 class SearchResult(BaseModel):
     """Correlation token of the two-phase closed loop (architecture_target.md ch. 11).
 
@@ -117,6 +150,7 @@ class SearchResult(BaseModel):
     user_id: str
     episodic: list[MemoryRecord] = Field(default_factory=list)
     semantic: list[MemoryRecord] = Field(default_factory=list)
+    retrieval_trace: RetrievalTrace = Field(default_factory=RetrievalTrace)
 
     def render(
         self,
