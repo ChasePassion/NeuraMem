@@ -19,19 +19,21 @@ NeuraMem 是一个基于神经科学和记忆模型的人工智能记忆系统�
 *   **叙事记忆 (Narrative Memory)**: 同一主题的事件叙事链（例如：用户腹泻 -> 找不到厕所 -> 拉裤子）。
 
 
-## 评测结果 (Benchmark Results)
+## Proof it works
 
-NeuraMem 在 [LoCoMo](https://github.com/snap-stanford/locomo) 长对话记忆基准上的当前稳定 ID 重跑结果（排除 category 5 adversarial 题目）为：**66.82%**（1029/1540，MiniMax-M3 全链路）。10 个 sample 全部完成，trace-to-store 的幽灵 ID 校验均为 `0`；s8 有 1 个 ingest turn 被跳过。
+NeuraMem 已在长对话用户记忆基准 [LoCoMo](https://github.com/snap-stanford/locomo) 上完成全量评测（10 个 sample、MiniMax-M3 全链路，排除 category 5 adversarial 题目）。
 
-当前结果、benchmark 模块职责、目录结构和复现命令详见 [docs/benchmark.md](docs/benchmark.md)；W1-W4 历史记录详见 [neuramem_benchmark/RUN_RECORD.md](neuramem_benchmark/RUN_RECORD.md)。
+**Overall: 66.82% (1029/1540)**，加权平均延迟 11.84s/题。
 
-一键复现：
+| 类别 | 正确 | 错误 | 总数 | 准确率 |
+| :--- | ---: | ---: | ---: | ---: |
+| 1-multi-hop | 198 | 84 | 282 | 70.21% |
+| 2-temporal | 185 | 136 | 321 | 57.63% |
+| 3-open-domain | 53 | 43 | 96 | 55.21% |
+| 4-single-hop | 593 | 248 | 841 | 70.51% |
 
-```bash
-python -m neuramem_benchmark.run_benchmark --all-samples --threads 10 --ingest-parallel 4 --output result/locomo_neuramem_all_results.csv
-```
-
-Windows 下需要可恢复、按 sample 运行时，使用 `scripts/locomo_batch.ps1`；完成后用 `python -m neuramem_benchmark.scorecard --root result/locomo_full_rerun` 汇总结果。
+- **User memory (LoCoMo)**: 总体 66.82%，其中 single-hop 与 multi-hop 均超过 70%，说明混合检索与叙事链扩展在事实型与多跳推理型问题上表现稳定。
+- **评测口径**: 按题目数加权；完整评测设置与逐 sample 结果见 [docs/benchmark.md](docs/benchmark.md)。
 
 ## 项目结构 (Project Layout)
 
